@@ -14,6 +14,33 @@ const (
 	slotBytes = 32 // rcx, rdx, r8, r9
 )
 
+// HookPoint 一个可 hook 的函数入口
+type HookPoint struct {
+	Name string
+	RVA  uintptr
+	Len  int
+	Orig []byte
+}
+
+// HookPoints 所有采集点。
+// 主点抓聊天消息；副点用于服务号/公众号消息（pcmon 使用的位置）。
+var HookPoints = []HookPoint{
+	{
+		Name: "chat", RVA: 0x67B7D0, Len: 18,
+		Orig: []byte{
+			0x55, 0x56, 0x53, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00,
+			0x00, 0x48, 0x8D, 0xAC, 0x24, 0x80, 0x00, 0x00, 0x00,
+		},
+	},
+	{
+		Name: "service", RVA: 0x3A29C50, Len: 19,
+		Orig: []byte{
+			0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x54, 0x56, 0x57, 0x53,
+			0x48, 0x83, 0xEC, 0x70, 0x48, 0x8D, 0x6C, 0x24, 0x70,
+		},
+	},
+}
+
 // Weixin 4.1.13.63 在 0x67B7D0 的原始字节
 var origBytes = []byte{
 	0x55, 0x56, 0x53, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00,
@@ -31,6 +58,13 @@ type Hooks struct {
 
 	// StartUnix 注入时刻（秒）。早于它的消息一律丢弃 —— 只处理新消息。
 	StartUnix int64
+
+	// 该 hook 属于哪个采集点
+	Point HookPoint
+
+	// 该点的运行计数
+	Scanned int
+	Parsed  int
 }
 
 func (hk *Hooks) Detach() {
@@ -45,20 +79,26 @@ func (hk *Hooks) restore() error {
 	if hk.Base == 0 {
 		return fmt.Errorf("基址未知")
 	}
-	t := hk.Base + HookRVA
-	old, err := hk.h.Protect(t, HookLen, PAGE_EXECUTE_READWRITE)
+	t := hk.Base + hk.Point.RVA
+	old, err := hk.h.Protect(t, hk.Point.Len, PAGE_EXECUTE_READWRITE)
 	if err != nil {
 		return err
 	}
-	if werr := hk.h.Write(t, origBytes); werr != nil {
-		hk.h.Protect(t, HookLen, old)
+	if werr := hk.h.Write(t, hk.Point.Orig); werr != nil {
+		hk.h.Protect(t, hk.Point.Len, old)
 		return werr
 	}
-	hk.h.Protect(t, HookLen, old)
+	hk.h.Protect(t, hk.Point.Len, old)
 	return nil
 }
 
+// Attach 在主采集点安装 hook（兼容旧调用）
 func Attach(pid uint32) (*Hooks, error) {
+	return AttachAt(pid, HookPoints[0])
+}
+
+// AttachAt 在指定采集点安装 hook
+func AttachAt(pid uint32, pt HookPoint) (*Hooks, error) {
 	h, err := OpenProcess(pid, PROCESS_ALL_ACCESS)
 	if err != nil {
 		return nil, err
@@ -69,24 +109,24 @@ func Attach(pid uint32) (*Hooks, error) {
 		return nil, err
 	}
 
-	hk := &Hooks{Pid: pid, Base: base, h: h}
+	hk := &Hooks{Pid: pid, Base: base, h: h, Point: pt}
 
 	// 当前字节校验
-	cur, err := h.Read(base+HookRVA, HookLen)
+	cur, err := h.Read(base+pt.RVA, pt.Len)
 	if err != nil {
 		h.Close()
 		return nil, err
 	}
-	if string(cur) != string(origBytes) {
-		// 尝试还原（被别的工具 hook 过）
+	if string(cur) != string(pt.Orig) {
+		// 尝试还原（被别的工具或旧版本自己 hook 过）
 		if cur[0] == 0x48 && cur[1] == 0xB8 && cur[10] == 0xFF && cur[11] == 0xE0 {
 			if err := hk.restore(); err == nil {
-				cur, _ = h.Read(base+HookRVA, HookLen)
+				cur, _ = h.Read(base+pt.RVA, pt.Len)
 			}
 		}
-		if string(cur) != string(origBytes) {
+		if string(cur) != string(pt.Orig) {
 			h.Close()
-			return nil, fmt.Errorf("hook 点字节不匹配，可能微信版本不是 4.1.13.63: % X", cur)
+			return nil, fmt.Errorf("[%s] hook 点字节不匹配(可能是别的版本): % X", pt.Name, cur)
 		}
 	}
 
@@ -105,10 +145,10 @@ func Attach(pid uint32) (*Hooks, error) {
 	}
 
 	// trampoline：原 18 字节 + jmp [rip+0] -> 目标+18
-	tramp := append([]byte{}, origBytes...)
+	tramp := append([]byte{}, pt.Orig...)
 	tramp = append(tramp, 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00)
 	var q [8]byte
-	binary.LittleEndian.PutUint64(q[:], uint64(base+HookRVA+HookLen))
+	binary.LittleEndian.PutUint64(q[:], uint64(base+pt.RVA+uintptr(pt.Len)))
 	tramp = append(tramp, q[:]...)
 	if err := h.Write(hk.TrampAddr, tramp); err != nil {
 		h.Close(); return nil, err
@@ -146,18 +186,18 @@ func Attach(pid uint32) (*Hooks, error) {
 	patch := []byte{0x48, 0xB8}
 	patch = appendU64(patch, uint64(hk.CodeAddr))
 	patch = append(patch, 0xFF, 0xE0)
-	for len(patch) < HookLen {
+	for len(patch) < pt.Len {
 		patch = append(patch, 0x90)
 	}
-	old, err := h.Protect(base+HookRVA, HookLen, PAGE_EXECUTE_READWRITE)
+	old, err := h.Protect(base+pt.RVA, pt.Len, PAGE_EXECUTE_READWRITE)
 	if err != nil {
 		h.Close(); return nil, err
 	}
-	if err := h.Write(base+HookRVA, patch); err != nil {
-		h.Protect(base+HookRVA, HookLen, old)
+	if err := h.Write(base+pt.RVA, patch); err != nil {
+		h.Protect(base+pt.RVA, pt.Len, old)
 		h.Close(); return nil, err
 	}
-	h.Protect(base+HookRVA, HookLen, old)
+	h.Protect(base+pt.RVA, pt.Len, old)
 
 	return hk, nil
 }
@@ -215,5 +255,9 @@ func (hk *Hooks) ReadAt(addr uint64, size int) []byte {
 	}
 	return b
 }
+
+
+
+
 
 

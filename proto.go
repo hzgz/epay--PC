@@ -98,6 +98,13 @@ type ChatMsg struct {
 	MsgID   uint64
 	Amount  float64 // 从正文提取的金额（元），0 表示识别不到
 	Raw     []byte
+	RawText string // 原始消息文本（XML 消息保留完整报文，便于排查）
+
+	// 公众号消息专用字段（wxtool 合同）
+	SortSeq  int64
+	LocalID  int64
+	GHFrom   string // 公众号 gh_id（= From）
+	GHName   string // 公众号显示名（微信收款商业版 等）
 }
 
 // ExtractMsg 从 protobuf 里提取聊天消息，不是消息就返回 nil
@@ -165,6 +172,7 @@ func ExtractMsg(d []byte) *ChatMsg {
 	//   <appmsg><title><![CDATA[微信支付收款0.10元(朋友到店)]]></title>...
 	// 这类消息必须保留：它就是收款通知本身。仅对 XML 提取 <title>。
 	if strings.HasPrefix(strings.TrimSpace(m.Content), "<") {
+		m.RawText = m.Content // 原始 XML 全文
 		t := xmlTitle(m.Content)
 		if t == "" {
 			return nil // 文件传输、名片等没有 title 的系统消息，丢弃
@@ -257,6 +265,9 @@ func isPrintable(s string) bool {
 }
 
 var _ = binary.LittleEndian
+
+
+
 
 
 

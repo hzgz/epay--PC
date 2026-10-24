@@ -17,17 +17,19 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.10"
+	AppVersion = "1.11"
 	WeChatProc = "Weixin.exe"
 )
 
 type Engine struct {
 	mu      sync.Mutex
-	hooks    *Hooks
+	hooks    []*Hooks
 	seen     map[uint64]bool
 	history  []MsgView
 	debug    []DebugItem
 	debugSeq int
+	unknowns []UnkSample
+	unkSeq   int
 	debugged bool
 	dbgCount int
 	dbgMsg   int
@@ -66,34 +68,47 @@ func (e *Engine) attach() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if e.hooks != nil {
+	if len(e.hooks) > 0 {
 		return true
 	}
 	pid := PidByName(WeChatProc)
 	if pid == 0 {
 		return false
 	}
-	hk, err := Attach(pid)
-	if err != nil {
-		logError("inject", "注入失败: %v", err)
+
+	ok := 0
+	for _, pt := range HookPoints {
+		hk, err := AttachAt(pid, pt)
+		if err != nil {
+			logWarn("inject", "采集点 %s 接入失败: %v", pt.Name, err)
+			continue
+		}
+		// 只处理新消息：先丢掉缓冲里残留的旧数据，再记下注入时刻作为下限
+		hk.ResetBuffer()
+		hk.StartUnix = time.Now().Unix()
+		e.hooks = append(e.hooks, hk)
+		ok++
+		logInfo("inject", "采集点 %s 已接入", pt.Name)
+	}
+
+	if ok == 0 {
+		logError("inject", "注入失败：所有采集点都不可用")
 		return false
 	}
-	// 只处理新消息：先丢掉缓冲里残留的旧数据，再记下注入时刻作为下限
-	hk.ResetBuffer()
-	hk.StartUnix = time.Now().Unix()
 
-	e.hooks = hk
 	e.stats.InjectedAt = time.Now()
 	e.stats.Pid = pid
-	logInfo("inject", "程序启动成功 pid=%d", pid)
+	logInfo("inject", "程序启动成功 pid=%d（%d 个采集点）", pid, ok)
 	return true
 }
 
 func (e *Engine) detach() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.hooks != nil {
-		e.hooks.Detach()
+	if len(e.hooks) > 0 {
+		for _, hk := range e.hooks {
+			hk.Detach()
+		}
 		e.hooks = nil
 		logInfo("inject", "已卸载 hook")
 	}
@@ -101,13 +116,19 @@ func (e *Engine) detach() {
 
 func (e *Engine) poll() {
 	e.mu.Lock()
-	hk := e.hooks
+	hooks := make([]*Hooks, len(e.hooks))
+	copy(hooks, e.hooks)
 	e.mu.Unlock()
 
+	for _, hk := range hooks {
+		e.pollOne(hk)
+	}
+}
+
+func (e *Engine) pollOne(hk *Hooks) {
 	if hk == nil {
 		return
 	}
-
 
 	for idx := 0; idx < Slots; idx++ {
 		_, rdx, r8, _, ok := hk.Slot(idx)
@@ -115,12 +136,22 @@ func (e *Engine) poll() {
 			continue
 		}
 		e.stats.Scanned++
+		hk.Scanned++
 		buf := hk.ReadAt(rdx, int(r8))
 		if buf == nil {
 			continue
 		}
 		m := ExtractMsg(buf)
 		if m == nil {
+			// 采样未识别结构，帮助判断某类消息是否经过 hook
+			if r8 > 200 && r8 < 8000 {
+				e.mu.Lock()
+				n := len(e.unknowns)
+				e.mu.Unlock()
+				if n < unkMax {
+					e.addUnknown(buf)
+				}
+			}
 			if os.Getenv("EASYDEBUG") == "1" && r8 > 600 && r8 < 1200 && e.dbgMsg < 10 {
 				e.dbgMsg++
 				var fs []PBField
@@ -168,6 +199,7 @@ func (e *Engine) poll() {
 		}
 		e.seen[key] = true
 		e.stats.Parsed++
+		hk.Parsed++
 		e.mu.Unlock()
 
 		e.addDebug(m, len(buf))
@@ -214,16 +246,25 @@ func (e *Engine) poll() {
 
 		logInfo("monitor", "消息 %s → %s: %s", short(m.From), short(m.To), truncate(m.Content, 60))
 		res := Report(m)
+		// 成功判定必须看 OK：平台返回 4xx/5xx 时 Err 可能是空的，只看 Err 会把失败当成功。
+		reportOK := res.Delivered && res.OK
 		e.mu.Lock()
-		if res.Err != "" {
+		if res.Delivered && !res.OK {
 			e.stats.Failed++
-			logError("callback", "上报失败: %s", res.Err)
-		} else {
+			reason := res.Err
+			if reason == "" {
+				reason = fmt.Sprintf("HTTP %d: %s", res.Code, truncate(res.Body, 120))
+			}
+			logError("callback", "上报失败: %s", reason)
+			if res.Err == "" {
+				res.Err = reason
+			}
+		} else if reportOK {
 			e.stats.Reported++
 			logInfo("callback", "上报成功 [%d] %s", res.Code, truncate(res.Body, 40))
 		}
 		e.mu.Unlock()
-		e.addHistory(m, res.Err == "", res.Err, &res)
+		e.addHistory(m, reportOK, res.Err, &res)
 	}
 }
 
@@ -277,7 +318,7 @@ func (e *Engine) run() {
 		case <-e.stopCh:
 			return
 		case <-recheck.C:
-			if e.hooks != nil {
+			if len(e.hooks) > 0 {
 				if PidByName(WeChatProc) != e.stats.Pid {
 					logWarn("inject", "微信进程已变化，重新注入")
 					e.detach()
@@ -301,6 +342,16 @@ func main() {
 		logError("config", "配置加载失败: %v", err)
 	}
 	c := GetConfig()
+	// 首次运行：自动探测微信安装路径并落盘，用户不用手填
+	if c.WeChatExe == "" {
+		if p := detectWeChatExe(); p != "" {
+			c.WeChatExe = p
+			SetConfig(c)
+			logInfo("config", "已自动识别微信路径: %s", p)
+		} else {
+			logWarn("config", "未找到微信安装路径，可在设置中手动指定")
+		}
+	}
 	mode := map[string]string{"yjk": "易简控", "v1": "码支付V1", "none": "仅打印"}[c.Mode]
 	filterMode := "全量转发"
 	if !c.ForwardAll {
@@ -311,8 +362,32 @@ func main() {
 	loadAccounts()
 	logInfo("config", "账号绑定: %d 个", len(accountsCopy()))
 
+	// 把上次运行的收款记录读回来（只恢复本程序自己抓到的数据，不碰微信历史）
+	if old := loadRecords(); len(old) > 0 {
+		eng.mu.Lock()
+		eng.history = old
+		eng.mu.Unlock()
+		logInfo("config", "已恢复收款记录: %d 条", len(old))
+	}
+	go recordsFlusher(eng.stopCh)
+
 	if PidByName(WeChatProc) == 0 {
 		logWarn("monitor", "未检测到 %s，等待启动…", WeChatProc)
+	}
+
+	// 数据库监控：读取公众号/服务号消息（收款助手、微信支付、赞赏通知）
+	if c.DbEnabled && c.DbWxid != "" && c.DbKey != "" {
+		if acc, ok := findWxAccount(c.DbWxid); ok {
+			if err := StartWxMonitor(acc.BizDB, c.DbKey, acc.Wxid, acc); err != nil {
+				logError("monitor", "数据库监控启动失败: %v", err)
+			} else {
+				InitDefaultWatches()
+			}
+		} else {
+			logWarn("monitor", "未找到微信账号 %s 的数据目录", c.DbWxid)
+		}
+	} else {
+		logInfo("monitor", "数据库监控未启用（需配置 db_enabled/db_wxid/db_key）")
 	}
 
 	go eng.run()
@@ -336,6 +411,7 @@ func main() {
 			select {
 			case <-sig:
 				logInfo("system", "正在退出…")
+	flushRecordsNow()
 				close(eng.stopCh)
 				eng.detach()
 				os.Exit(0)
@@ -360,6 +436,18 @@ func main() {
 	}
 	runWindow(port)
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

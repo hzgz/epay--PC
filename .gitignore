@@ -1,16 +1,27 @@
-# ????
+# 编译产物
 *.exe
 *.syso
 *.test
 
-# ?????
+# 运行数据（首次运行自动生成，不入库）
+config.json
+accounts.json
+records.json
+
+# 运行日志与缓存
 run.log
 err.log
 webview-data/
 .edge-profile/
-config.json
-accounts.json
 
-# ????
+# 测试与临时目录
+wcdbtest/
+
+# 图片（保留应用图标）
 *.png
 !app.png
+
+# 根目录重复的 DLL（native/ 目录里已包含）
+/WCDB.dll
+/wx_key.dll
+/wxtool_wcdb.dll

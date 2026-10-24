@@ -80,6 +80,7 @@ func setWindowIcons(hwnd uintptr) {
 
 // quitApp 真正退出程序
 func quitApp() {
+	flushRecordsNow()
 	removeTray()
 	logInfo("system", "正在退出…")
 	select {
@@ -134,13 +135,15 @@ func runWindow(port int) {
 	title := AppName + "  v" + AppVersion
 
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
-		Debug:     false,
+		// Debug 同时控制「右键菜单」与「DevTools」：go-webview2 把两者绑在同一个开关上。
+		// 关掉 Debug 会导致输入框无法右键复制/粘贴，所以这里必须开着。
+		Debug:     true,
 		AutoFocus: true,
 		DataPath:  webviewDataDir(),
 		WindowOptions: webview2.WindowOptions{
 			Title:  title,
-			Width:  1240,
-			Height: 820,
+			Width:  1180,
+			Height: 680,
 			Center: true,
 		},
 	})
@@ -164,7 +167,7 @@ func runWindow(port int) {
 	w.Bind("goCancelClose", func() string { return "" })
 
 	w.Navigate(url)
-	w.SetSize(1240, 820, webview2.HintNone)
+	w.SetSize(1180, 680, webview2.HintNone)
 
 	// 窗口就绪后：设置图标、上托盘、子类化拦截 WM_CLOSE
 	go func() {
@@ -189,6 +192,7 @@ func runWindow(port int) {
 
 	w.Run() // 阻塞直到真正退出
 
+	flushRecordsNow()
 	removeTray()
 	select {
 	case <-eng.stopCh:
@@ -197,5 +201,9 @@ func runWindow(port int) {
 	}
 	eng.detach()
 }
+
+
+
+
 
 

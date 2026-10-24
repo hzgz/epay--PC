@@ -12,9 +12,9 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "EasyMonitor"
       VALUE "FileDescription", "EasyMonitor PC"
-      VALUE "FileVersion", "1.10.0.0"
+      VALUE "FileVersion", "1.11.0.0"
       VALUE "ProductName", "EasyMonitor PC"
-      VALUE "ProductVersion", "1.10.0.0"
+      VALUE "ProductVersion", "1.11.0.0"
       VALUE "LegalCopyright", "EasyMonitor"
     END
   END
@@ -23,4 +23,5 @@ BEGIN
     VALUE "Translation", 0x804, 1200
   END
 END
+
 

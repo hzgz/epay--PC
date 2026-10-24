@@ -3,6 +3,7 @@ package main
 // 配置
 
 import (
+	"golang.org/x/sys/windows/registry"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -37,6 +38,11 @@ type Config struct {
 	// 行为
 	AutoInject  bool `json:"auto_inject"`
 	WeChatExe   string `json:"wechat_exe"`
+
+	// 数据库读取（公众号/服务号消息）
+	DbEnabled bool   `json:"db_enabled"` // 是否启用数据库读取
+	DbWxid    string `json:"db_wxid"`    // 微信账号 wxid
+	DbKey     string `json:"db_key"`     // 数据库密钥（64 位 hex）
 }
 
 var (
@@ -47,11 +53,49 @@ var (
 		ForwardAll: false,
 		Keywords:   append([]string{}, defaultKeywords...),
 		IgnoreSelf: false,
-		AutoInject: true,
-		WeChatExe:  `D:\Weixin\Weixin.exe`,
+		AutoInject: false,
+		WeChatExe:  "",
 	}
 )
 
+
+// detectWeChatExe 探测本机微信安装路径（只读注册表和常见目录）
+func detectWeChatExe() string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		`D:\Weixin\Weixin.exe`,
+		`C:\Program Files\Tencent\Weixin\Weixin.exe`,
+		`C:\Program Files (x86)\Tencent\Weixin\Weixin.exe`,
+	}
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, "AppData", "Local", "Tencent", "Weixin", "Weixin.exe"),
+		)
+	}
+	// 注册表卸载项里通常记着安装目录
+	if k, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Weixin`,
+		registry.QUERY_VALUE); err == nil {
+		if v, _, e := k.GetStringValue("InstallLocation"); e == nil && v != "" {
+			candidates = append([]string{filepath.Join(v, "Weixin.exe")}, candidates...)
+		}
+		k.Close()
+	}
+	if k, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Weixin`,
+		registry.QUERY_VALUE); err == nil {
+		if v, _, e := k.GetStringValue("InstallLocation"); e == nil && v != "" {
+			candidates = append([]string{filepath.Join(v, "Weixin.exe")}, candidates...)
+		}
+		k.Close()
+	}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
 func configPath() string {
 	exe, _ := os.Executable()
 	return filepath.Join(filepath.Dir(exe), "config.json")
@@ -94,5 +138,9 @@ func SetConfig(c Config) error {
 	cfgMu.Unlock()
 	return SaveConfig()
 }
+
+
+
+
 
 
