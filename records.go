@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -108,3 +109,33 @@ func flushRecordsNow() {
 	recDirty = false
 	recMu.Unlock()
 }
+
+// msgID 记录的唯一标识（时间 + 收发方 + 内容）
+func msgID(v *MsgView) string {
+	return fmt.Sprintf("%x", hashMsg(v.From+"|"+v.To+"|"+v.Content, v.Time))
+}
+
+// deleteRecords 删除指定 id 的记录，返回删除条数
+func (e *Engine) deleteRecords(ids map[string]bool) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]MsgView, 0, len(e.history))
+	removed := 0
+	for i := range e.history {
+		v := e.history[i]
+		if v.ID == "" {
+			v.ID = msgID(&v)
+		}
+		if ids[v.ID] {
+			removed++
+			continue
+		}
+		out = append(out, v)
+	}
+	if removed > 0 {
+		e.history = out
+		markRecordsDirty()
+	}
+	return removed
+}
+

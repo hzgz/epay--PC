@@ -8,6 +8,7 @@ package main
 
 import (
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,9 +42,12 @@ type WxMonitor struct {
 	pollStart  time.Time
 }
 
-var wxMon *WxMonitor
+var (
+	wxMonsMu sync.Mutex
+	wxMons   = map[string]*WxMonitor{} // wxid -> monitor
+)
 
-// StartWxMonitor 启动数据库监控
+// StartWxMonitor 启动数据库监控（多账号：同一 wxid 会先停掉旧的）
 func StartWxMonitor(dbPath, keyHex, wxid string, acc WxAccount) error {
 	db, err := OpenWxDB(dbPath, keyHex)
 	if err != nil {
@@ -56,7 +60,6 @@ func StartWxMonitor(dbPath, keyHex, wxid string, acc WxAccount) error {
 		stop:    make(chan struct{}),
 		primed:  map[string]bool{},
 	}
-	// 自动发现所有 gh_ 表
 	tables, err := db.Tables()
 	if err != nil {
 		db.Close()
@@ -70,18 +73,22 @@ func StartWxMonitor(dbPath, keyHex, wxid string, acc WxAccount) error {
 	}
 	m.started = true
 	m.pollStart = time.Now()
-	wxMon = m
+
+	wxMonsMu.Lock()
+	old := wxMons[wxid]
+	wxMons[wxid] = m
+	wxMonsMu.Unlock()
+	if old != nil {
+		old.shutdown()
+	}
+
 	go m.loop()
-	logInfo("monitor", "数据库监控已启动：%d 个公众号表", len(m.watches))
+	logInfo("monitor", "账号 %s 数据库监控已启动：%d 个公众号表", wxid, len(m.watches))
 	return nil
 }
 
-// StopWxMonitor 停止
-func StopWxMonitor() {
-	m := wxMon
-	if m == nil {
-		return
-	}
+// shutdown 内部停止（不删 map）
+func (m *WxMonitor) shutdown() {
 	select {
 	case <-m.stop:
 	default:
@@ -90,8 +97,56 @@ func StopWxMonitor() {
 	if m.db != nil {
 		m.db.Close()
 	}
-	wxMon = nil
-	logInfo("monitor", "数据库监控已停止")
+}
+
+// StopWxMonitorFor 停止指定账号
+func StopWxMonitorFor(wxid string) {
+	wxMonsMu.Lock()
+	m := wxMons[wxid]
+	delete(wxMons, wxid)
+	wxMonsMu.Unlock()
+	if m == nil {
+		return
+	}
+	m.shutdown()
+	logInfo("monitor", "账号 %s 数据库监控已停止", wxid)
+}
+
+// StopWxMonitor 停止全部（兼容旧调用）
+func StopWxMonitor() {
+	StopAllWxMonitors()
+}
+
+// StopAllWxMonitors 停止所有账号
+func StopAllWxMonitors() {
+	wxMonsMu.Lock()
+	list := make([]*WxMonitor, 0, len(wxMons))
+	for _, m := range wxMons {
+		list = append(list, m)
+	}
+	wxMons = map[string]*WxMonitor{}
+	wxMonsMu.Unlock()
+	for _, m := range list {
+		m.shutdown()
+	}
+	if len(list) > 0 {
+		logInfo("monitor", "已停止 %d 个账号的数据库监控", len(list))
+	}
+}
+
+// primaryMonitor 返回主监控（用于旧接口）
+func primaryMonitor() *WxMonitor {
+	wxMonsMu.Lock()
+	defer wxMonsMu.Unlock()
+	if cfg.DbWxid != "" {
+		if m, ok := wxMons[cfg.DbWxid]; ok {
+			return m
+		}
+	}
+	for _, m := range wxMons {
+		return m
+	}
+	return nil
 }
 
 // BindGh 绑定一个要监听的公众号
@@ -199,6 +254,8 @@ func (m *WxMonitor) pollOnce() {
 func (m *WxMonitor) handle(w *WxWatch, raw RawMsg) {
 	gm := ParseGhContent(raw.Content)
 	if gm.Title == "" {
+		// 解析不出标题也记进调试，方便看原始内容
+		m.recordDebug(w, raw, gm, "")
 		return
 	}
 
@@ -217,6 +274,10 @@ func (m *WxMonitor) handle(w *WxWatch, raw RawMsg) {
 		GHFrom:  w.GhID,
 		GHName:  w.Name,
 	}
+
+	// 不管是否转发都先记进「消息调试」，
+	// 否则被关键词过滤掉的消息在界面上完全看不到，没法排查。
+	m.recordDebug(w, raw, gm, gm.Title)
 
 	// 转发规则（与 hook 路径共用同一套判断）
 	if d := ShouldForward(m2); !d.Forward {
@@ -254,6 +315,43 @@ func (m *WxMonitor) handle(w *WxWatch, raw RawMsg) {
 	logInfo("monitor", "[%s] %s  ¥%.2f", w.Name, truncate(gm.Title, 40), m2.Amount)
 }
 
+// recordDebug 把数据库读到的消息也记进「消息调试」。
+// 之前 addDebug 只挂在 hook 路径上，改用数据库方案后调试页面永远是空的。
+func (m *WxMonitor) recordDebug(w *WxWatch, raw RawMsg, gm GhMessage, title string) {
+	if eng == nil {
+		return
+	}
+	display := title
+	if display == "" {
+		display = strings.TrimSpace(gm.Decoded)
+		if len(display) > 80 {
+			display = display[:80]
+		}
+		if display == "" {
+			display = raw.Content
+			if len(display) > 80 {
+				display = display[:80]
+			}
+		}
+	}
+	m2 := &ChatMsg{
+		From:    w.GhID,
+		To:      m.acc.Wxid,
+		Content: title,
+		Display: display,
+		Time:    uint64(raw.CreateAt),
+		RawText: gm.Decoded,
+		Raw:     []byte(raw.Content),
+		Amount:  gm.Amount,
+		MsgID:   uint64(raw.ServerID),
+		SortSeq: raw.SortSeq,
+		LocalID: raw.LocalID,
+		GHFrom:  w.GhID,
+		GHName:  w.Name,
+	}
+	eng.addDebug(m2, len(raw.Content))
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
@@ -278,28 +376,33 @@ func itoa(n int) string {
 
 // WxMonitorStatus 监控状态（给 UI）
 type WxMonitorStatus struct {
-	Running  bool
-	Wxid     string
-	Watches  []WxWatchStatus
-	PollRounds int
-	PollMsgs   int
-	UptimeSec  int64
+	Running    bool            `json:"running"`
+	Wxid       string          `json:"wxid"`
+	Watches    []WxWatchStatus `json:"watches"`
+	PollRounds int             `json:"poll_rounds"`
+	PollMsgs   int             `json:"poll_msgs"`
+	UptimeSec  int64           `json:"uptime_sec"`
 }
 
 type WxWatchStatus struct {
-	Name   string
-	GhID   string
-	Table  string
+	Name   string `json:"name"`
+	GhID   string `json:"gh_id"`
+	Table  string `json:"table"`
 	LastID int64
 	Primed bool
 }
 
-// WxStatus 取状态
+// WxStatus 取主账号状态（兼容旧调用）
 func WxStatus() WxMonitorStatus {
-	m := wxMon
+	m := primaryMonitor()
 	if m == nil {
 		return WxMonitorStatus{}
 	}
+	return m.status()
+}
+
+// status 取单个监控的状态
+func (m *WxMonitor) status() WxMonitorStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	st := WxMonitorStatus{
@@ -323,24 +426,50 @@ func WxStatus() WxMonitorStatus {
 	return st
 }
 
+// WxStatusAll 取所有账号状态
+func WxStatusAll() []WxMonitorStatus {
+	wxMonsMu.Lock()
+	list := make([]*WxMonitor, 0, len(wxMons))
+	for _, m := range wxMons {
+		list = append(list, m)
+	}
+	wxMonsMu.Unlock()
+
+	out := make([]WxMonitorStatus, 0, len(list))
+	for _, m := range list {
+		out = append(out, m.status())
+	}
+	// 按 wxid 排序，界面顺序稳定
+	sort.Slice(out, func(a, b int) bool { return out[a].Wxid < out[b].Wxid })
+	return out
+}
+
 // DefaultWatches 默认监听的公众号
 var defaultWatches = []struct{ Gh, Name string }{
 	{"gh_f0a92aa7146c", "微信收款助手"},
 	{"gh_3dfda90e39d6", "微信支付"},
 }
 
-// InitDefaultWatches 绑定默认公众号
+// InitDefaultWatches 给所有在跑的监控绑定默认公众号
 func InitDefaultWatches() {
-	m := wxMon
-	if m == nil {
-		return
+	wxMonsMu.Lock()
+	list := make([]*WxMonitor, 0, len(wxMons))
+	for _, m := range wxMons {
+		list = append(list, m)
 	}
-	for _, d := range defaultWatches {
-		m.BindGh(d.Gh, d.Name)
+	wxMonsMu.Unlock()
+
+	for _, m := range list {
+		for _, d := range defaultWatches {
+			m.BindGh(d.Gh, d.Name)
+		}
 	}
 }
 
 var _ = os.Stat
+
+
+
 
 
 

@@ -291,6 +291,7 @@ type RawMsg struct {
 	CreateAt  int64
 	Content   string // hex 编码（可能是 zstd 压缩）
 	IsZstd    bool
+	Table     string // 来源表名（Msg_<hash>）
 }
 
 // Messages 读取消息
@@ -357,6 +358,7 @@ type WxAccount struct {
 	BizDB     string // biz_message_0.db 路径
 	MsgDB     string // message_0.db 路径
 	ContactDB string // contact.db 路径
+	SessionDB string // session.db 路径（最小，验证密钥最快）
 	HasBiz    bool
 	ModTime   time.Time
 }
@@ -407,6 +409,7 @@ func ScanWxAccounts() []WxAccount {
 		acc.BizDB = filepath.Join(dir, "db_storage", "message", "biz_message_0.db")
 		acc.MsgDB = filepath.Join(dir, "db_storage", "message", "message_0.db")
 		acc.ContactDB = filepath.Join(dir, "db_storage", "contact", "contact.db")
+		acc.SessionDB = filepath.Join(dir, "db_storage", "session", "session.db")
 		if st, err := os.Stat(acc.BizDB); err == nil {
 			acc.HasBiz = true
 			acc.ModTime = st.ModTime()
@@ -430,3 +433,28 @@ func findWxAccount(wxid string) (WxAccount, bool) {
 
 
 
+
+
+// PeekAllTables 扫所有 Msg_ 表，各取最新 perTable 条。
+// 用来在「消息调试」里展示好友 / 群聊消息（message_0.db 里每个联系人一张表）。
+func (d *WxDB) PeekAllTables(perTable int) ([]RawMsg, error) {
+	tables, err := d.Tables()
+	if err != nil {
+		return nil, err
+	}
+	var out []RawMsg
+	for _, t := range tables {
+		if !strings.HasPrefix(t, "Msg_") {
+			continue
+		}
+		msgs, err := d.Messages(t, perTable, 0, false)
+		if err != nil {
+			continue
+		}
+		for _, m := range msgs {
+			m.Table = t
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}

@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.11"
+	AppVersion = "1.12"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -376,18 +376,29 @@ func main() {
 	}
 
 	// 数据库监控：读取公众号/服务号消息（收款助手、微信支付、赞赏通知）
-	if c.DbEnabled && c.DbWxid != "" && c.DbKey != "" {
-		if acc, ok := findWxAccount(c.DbWxid); ok {
-			if err := StartWxMonitor(acc.BizDB, c.DbKey, acc.Wxid, acc); err != nil {
-				logError("monitor", "数据库监控启动失败: %v", err)
-			} else {
-				InitDefaultWatches()
-			}
-		} else {
-			logWarn("monitor", "未找到微信账号 %s 的数据目录", c.DbWxid)
+	// 支持多账号同时监控：每个账号独立密钥、独立数据库连接
+	if c.DbEnabled {
+		accounts := c.EffectiveDbAccounts()
+		if len(accounts) == 0 {
+			logInfo("monitor", "数据库监控未启用（还没有配置微信账号）")
 		}
+		for _, da := range accounts {
+			acc, ok := findWxAccount(da.Wxid)
+			if !ok {
+				logWarn("monitor", "未找到微信账号 %s 的数据目录", da.Wxid)
+				continue
+			}
+			if !acc.HasBiz {
+				logWarn("monitor", "账号 %s 没有 biz_message_0.db，跳过", da.Wxid)
+				continue
+			}
+			if err := StartWxMonitor(acc.BizDB, da.Key, acc.Wxid, acc); err != nil {
+				logError("monitor", "账号 %s 监控启动失败: %v", da.Wxid, err)
+			}
+		}
+		InitDefaultWatches()
 	} else {
-		logInfo("monitor", "数据库监控未启用（需配置 db_enabled/db_wxid/db_key）")
+		logInfo("monitor", "数据库监控未启用")
 	}
 
 	go eng.run()
@@ -436,6 +447,7 @@ func main() {
 	}
 	runWindow(port)
 }
+
 
 
 

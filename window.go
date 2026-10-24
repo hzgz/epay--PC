@@ -143,7 +143,7 @@ func runWindow(port int) {
 		WindowOptions: webview2.WindowOptions{
 			Title:  title,
 			Width:  1180,
-			Height: 680,
+			Height: 772,
 			Center: true,
 		},
 	})
@@ -167,7 +167,7 @@ func runWindow(port int) {
 	w.Bind("goCancelClose", func() string { return "" })
 
 	w.Navigate(url)
-	w.SetSize(1180, 680, webview2.HintNone)
+	w.SetSize(1180, 772, webview2.HintNone)
 
 	// 窗口就绪后：设置图标、上托盘、子类化拦截 WM_CLOSE
 	go func() {
@@ -201,6 +201,8 @@ func runWindow(port int) {
 	}
 	eng.detach()
 }
+
+
 
 
 

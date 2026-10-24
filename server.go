@@ -3,6 +3,8 @@ package main
 // 内嵌 HTTP 服务：提供 UI 与配置/状态 API
 
 import (
+	"regexp"
+	"sort"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -39,6 +41,9 @@ type StatusResp struct {
 
 	// 各采集点独立计数
 	Points []PointStat `json:"points"`
+
+	// 多账号监控状态
+	WxAccounts []WxMonitorStatus `json:"wx_accounts"`
 }
 
 type PointStat struct {
@@ -48,6 +53,7 @@ type PointStat struct {
 }
 
 type MsgView struct {
+	ID       string  `json:"id"`
 	From     string  `json:"from"`
 	To       string  `json:"to"`
 	Content  string  `json:"content"`
@@ -116,9 +122,13 @@ func (e *Engine) snapshot() StatusResp {
 		rate = float64(reported) / float64(total) * 100
 	}
 
-	// 监听是否在跑：hook 或数据库监控任一生效即算在线
-	dbSt := WxStatus()
-	dbLive := dbSt.Running
+	// 监听是否在跑：hook 或任一账号的数据库监控生效即算在线
+	dbAll := WxStatusAll()
+	dbLive := len(dbAll) > 0
+	dbRounds := 0
+	for _, s := range dbAll {
+		dbRounds += s.PollRounds
+	}
 	live := e.hooks != nil || dbLive
 	pid := e.stats.Pid
 	if pid == 0 && dbLive {
@@ -129,7 +139,7 @@ func (e *Engine) snapshot() StatusResp {
 		Attached:      live,
 		Pid:           pid,
 		WechatRunning: PidByName(WeChatProc) != 0,
-		Scanned:       dbSt.PollRounds + e.stats.Scanned,
+		Scanned:       dbRounds + e.stats.Scanned,
 		Parsed:        forwarded,
 		Forwarded:     forwarded,
 		Reported:      reported,
@@ -146,6 +156,7 @@ func (e *Engine) snapshot() StatusResp {
 		AllCount:      allCnt,
 		SuccessRate:   rate,
 		Points:        e.pointStatsLocked(),
+		WxAccounts:    dbAll,
 	}
 }
 
@@ -164,6 +175,12 @@ type DebugItem struct {
 	RawHead  string  `json:"raw_head"`
 	At       string  `json:"at"`
 }
+
+// 从 XML 消息里提取发送者 / 接收者
+var (
+	reFromUser = regexp.MustCompile(`fromusername\s*=\s*"([^"]+)"`)
+	reToUser   = regexp.MustCompile(`tousername\s*=\s*"([^"]+)"`)
+)
 
 const debugMax = 20
 
@@ -337,6 +354,10 @@ func startServer() (int, error) {
 			}
 			items = filtered
 		}
+		// 每条给一个稳定 id，供删除使用
+		for i := range items {
+			items[i].ID = msgID(&items[i])
+		}
 		json.NewEncoder(w).Encode(items)
 	})
 
@@ -386,6 +407,29 @@ func startServer() (int, error) {
 		}
 		deleteAccountAll(wxid)
 		w.Write([]byte(`{"ok":true}`))
+	})
+
+	// 清空指定记录（按 id 列表）
+	mux.HandleFunc("/api/messages/delete", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		var req struct {
+			IDs []string `json:"ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
+			http.Error(w, "bad request", 400)
+			return
+		}
+		del := make(map[string]bool, len(req.IDs))
+		for _, id := range req.IDs {
+			del[id] = true
+		}
+		removed := eng.deleteRecords(del)
+		logInfo("config", "清空记录 %d 条", removed)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "removed": removed})
 	})
 
 	mux.HandleFunc("/api/unknown", func(w http.ResponseWriter, r *http.Request) {
@@ -446,36 +490,27 @@ func startServer() (int, error) {
 				sec = 60
 			}
 		}
-		res := ExtractKey(time.Duration(sec) * time.Second)
+		res := ExtractKey(time.Duration(sec)*time.Second, r.URL.Query().Get("wxid"))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(res)
 	})
 
-	// 等待模式：盯微信重启，自动 hook 抓密钥
-	mux.HandleFunc("/api/wx/getkey/watch", func(w http.ResponseWriter, r *http.Request) {
+	// 异步扫描密钥（自研内存扫描，带进度）
+	mux.HandleFunc("/api/wx/getkey/async", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "POST only", 405)
 			return
 		}
-		sec := 180
-		if v := r.URL.Query().Get("sec"); v != "" {
-			fmt.Sscanf(v, "%d", &sec)
-			if sec < 30 {
-				sec = 30
-			}
-			if sec > 900 {
-				sec = 900
-			}
-		}
-		StartKeyWatch(time.Duration(sec) * time.Second)
+		StartKeyScan(r.URL.Query().Get("wxid"))
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "sec": sec})
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 
-	mux.HandleFunc("/api/wx/getkey/status", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/wx/getkey/progress", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(KeyWatchStatusNow())
+		json.NewEncoder(w).Encode(scanProgress())
 	})
+
 
 	// 绑定账号：校验密钥 → 保存账号与配置 → 启动监控
 	mux.HandleFunc("/api/wx/bind", func(w http.ResponseWriter, r *http.Request) {
@@ -528,20 +563,46 @@ func startServer() (int, error) {
 		tables, _ := db.Tables()
 		db.Close()
 
-		// 保存账号
+		// 保存账号：没传通道就保留原来的，避免把已绑定的清掉
+		ch := strings.TrimSpace(req.ChannelID)
+		old, had := findAccount(req.Wxid)
+		if ch == "" && had {
+			ch = old.ChannelID
+		}
+		nick := req.Wxid
+		if had && old.Nick != "" {
+			nick = old.Nick
+		}
 		upsertAccount(Account{
-			Wxid: req.Wxid, Nick: req.Wxid,
-			ChannelID: req.ChannelID, Enabled: true,
+			Wxid: req.Wxid, Nick: nick,
+			ChannelID: ch, Enabled: true,
 		})
 
-		// 保存配置并（重新）启动监控
+		// 保存到多账号列表（同一 wxid 就更新密钥，不重复添加）
 		cfg := GetConfig()
 		cfg.DbEnabled = true
-		cfg.DbWxid = req.Wxid
-		cfg.DbKey = key
+		dup := false
+		for i := range cfg.DbAccounts {
+			if cfg.DbAccounts[i].Wxid == req.Wxid {
+				cfg.DbAccounts[i].Key = key
+				cfg.DbAccounts[i].Enabled = true
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			cfg.DbAccounts = append(cfg.DbAccounts, DbAccount{
+				Wxid: req.Wxid, Key: key, Enabled: true,
+			})
+		}
+		// 主账号字段只在为空时补上，保持向后兼容
+		if cfg.DbWxid == "" {
+			cfg.DbWxid = req.Wxid
+			cfg.DbKey = key
+		}
 		SetConfig(cfg)
 
-		StopWxMonitor()
+		// 只（重新）启动这个账号，别的账号不受影响
 		if err := StartWxMonitor(acc.BizDB, key, acc.Wxid, acc); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
@@ -551,11 +612,43 @@ func startServer() (int, error) {
 		}
 		InitDefaultWatches()
 
-		logInfo("config", "账号已绑定 %s（%d 张消息表）", req.Wxid, len(tables))
+		logInfo("config", "账号已绑定 %s（%d 张消息表，共 %d 个账号在监控）",
+			req.Wxid, len(tables), len(cfg.EffectiveDbAccounts()))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok": true, "tables": len(tables),
 		})
+	})
+
+	// 解除某个账号的监控（保留订单记录）
+	mux.HandleFunc("/api/wx/unbind", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		wxid := r.URL.Query().Get("wxid")
+		if wxid == "" {
+			http.Error(w, "wxid required", 400)
+			return
+		}
+		StopWxMonitorFor(wxid)
+
+		cfg := GetConfig()
+		kept := make([]DbAccount, 0, len(cfg.DbAccounts))
+		for _, a := range cfg.DbAccounts {
+			if a.Wxid != wxid {
+				kept = append(kept, a)
+			}
+		}
+		cfg.DbAccounts = kept
+		if cfg.DbWxid == wxid {
+			cfg.DbWxid = ""
+			cfg.DbKey = ""
+		}
+		SetConfig(cfg)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 
 	mux.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
@@ -576,6 +669,124 @@ func startServer() (int, error) {
 		w.Write([]byte(`{"ok":true}`))
 	})
 
+	// /api/debug/scan 扫 message_0.db 的所有表，把好友 / 群聊消息也列出来。
+	// 微信 4.x 里每个联系人或群聊对应一张 Msg_<hash> 表。
+	mux.HandleFunc("/api/debug/scan", func(w http.ResponseWriter, r *http.Request) {
+		wxid := r.URL.Query().Get("wxid")
+		if wxid == "" {
+			if c := GetConfig(); c.DbWxid != "" {
+				wxid = c.DbWxid
+			}
+		}
+		acc, ok := findWxAccount(wxid)
+		if !ok {
+			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "找不到账号 " + wxid})
+			return
+		}
+		dbPath := acc.MsgDB
+		if dbPath == "" || !fileExists(dbPath) {
+			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "该账号没有 message_0.db"})
+			return
+		}
+		keyHex := ""
+		for _, da := range GetConfig().EffectiveDbAccounts() {
+			if da.Wxid == wxid {
+				keyHex = da.Key
+				break
+			}
+		}
+		if keyHex == "" && GetConfig().DbWxid == wxid {
+			keyHex = GetConfig().DbKey
+		}
+		if keyHex == "" {
+			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "该账号还没有通行密钥"})
+			return
+		}
+		db, err := OpenWxDB(dbPath, keyHex)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "打开 message_0.db 失败：" + err.Error()})
+			return
+		}
+		msgs, err := db.PeekAllTables(2)
+		db.Close()
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		type row struct {
+			Table   string `json:"table"`
+			LocalID int64  `json:"local_id"`
+			Time    int64  `json:"time"`
+			Preview string `json:"preview"`
+			From    string `json:"from"`
+		}
+		rows := make([]row, 0, len(msgs))
+		for _, m := range msgs {
+			txt, _, _ := DecodeContent(m.Content)
+			from := ""
+
+			// 文本消息：正文常以 "wxid_xxx:" 或 "xxx@chatroom:" 开头
+			if i := strings.Index(txt, ":"); i > 0 && i < 64 {
+				p := txt[:i]
+				if strings.HasPrefix(p, "wxid_") || strings.Contains(p, "@chatroom") {
+					from = p
+					txt = strings.TrimSpace(txt[i+1:])
+				}
+			}
+
+			// XML 消息（图片/视频/表情/系统）：正文里有 fromusername / tousername
+			if from == "" {
+				if m1 := reFromUser.FindStringSubmatch(txt); len(m1) > 1 {
+					from = m1[1]
+				}
+			}
+			// 群聊消息把群 ID 也标出来
+			if m2 := reToUser.FindStringSubmatch(txt); len(m2) > 1 &&
+				strings.Contains(m2[1], "@chatroom") {
+				if from == "" {
+					from = m2[1]
+				} else if !strings.Contains(from, "@chatroom") {
+					from = m2[1] + " / " + from
+				}
+			}
+
+			// 预览：去掉 XML 标签，只留可读文字
+			preview := txt
+			if strings.HasPrefix(strings.TrimSpace(preview), "<") {
+				kind := "XML"
+				switch {
+				case strings.Contains(preview, "<img"):
+					kind = "[图片]"
+				case strings.Contains(preview, "<videomsg"):
+					kind = "[视频]"
+				case strings.Contains(preview, "<emoji"):
+					kind = "[表情]"
+				case strings.Contains(preview, "<voicemsg"):
+					kind = "[语音]"
+				case strings.Contains(preview, "revokemsg"):
+					kind = "[撤回]"
+				case strings.Contains(preview, "sysmsgtemplate"):
+					kind = "[系统消息]"
+				case strings.Contains(preview, "<appmsg"):
+					kind = "[链接/卡片]"
+				}
+				if kind != "XML" {
+					preview = kind
+				} else if len(preview) > 100 {
+					preview = preview[:100]
+				}
+			}
+			if len(preview) > 120 {
+				preview = preview[:120]
+			}
+			if from == "" {
+				from = m.Table
+			}
+			rows = append(rows, row{Table: m.Table, LocalID: m.LocalID, Time: m.CreateAt, Preview: preview, From: from})
+		}
+		sort.Slice(rows, func(a, b int) bool { return rows[a].Time > rows[b].Time })
+		w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": len(rows), "rows": rows})
+	})
 	mux.HandleFunc("/api/debug", func(w http.ResponseWriter, r *http.Request) {
 		e := eng
 		e.mu.Lock()
@@ -609,6 +820,17 @@ func startServer() (int, error) {
 	go http.Serve(ln, mux)
 	return port, nil
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
 

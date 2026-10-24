@@ -69,6 +69,28 @@ func PidByName(name string) uint32 {
 	return 0
 }
 
+// PidsByName 返回所有同名进程（微信多开时会有多个）
+func PidsByName(name string) []uint32 {
+	snap, _, _ := procCreateSnapshot.Call(TH32CS_SNAPPROCESS, 0)
+	if snap == 0 || snap == uintptr(syscall.InvalidHandle) {
+		return nil
+	}
+	defer procCloseHandle.Call(snap)
+
+	var out []uint32
+	var pe PROCESSENTRY32W
+	pe.Size = uint32(unsafe.Sizeof(pe))
+	r, _, _ := procProcess32First.Call(snap, uintptr(unsafe.Pointer(&pe)))
+	for r != 0 {
+		exe := syscall.UTF16ToString(pe.ExeFile[:])
+		if equalFold(exe, name) {
+			out = append(out, pe.ProcessID)
+		}
+		r, _, _ = procProcess32Next.Call(snap, uintptr(unsafe.Pointer(&pe)))
+	}
+	return out
+}
+
 func equalFold(a, b string) bool {
 	if len(a) != len(b) {
 		return false

@@ -13,8 +13,10 @@
   --orange:#B86E00; --orange-bg:#FFF4E0; --purple:#6D3FD1; --purple-bg:#F1EBFF;
 }
 *{margin:0;padding:0;box-sizing:border-box;}
+/* 整体缩放：内容小一号，同窗口能看到更多 */
+html{zoom:0.90;}
 body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg);color:var(--text);overflow:hidden;font-size:14px;-webkit-font-smoothing:antialiased;}
-.app{display:flex;height:100vh;}
+.app{display:flex;height:calc(100vh / 0.9);}
 
 /* 左侧导航 */
 .side{width:196px;background:var(--green);display:flex;flex-direction:column;flex-shrink:0;}
@@ -201,7 +203,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
       <a data-page="settings"><span class="ic">⚙</span>通知设置</a>
       <a data-page="about"><span class="ic">ⓘ</span>关于</a>
     </div>
-    <div class="side-foot">v1.11</div>
+    <div class="side-foot">v1.12</div>
   </div>
 
   <div class="main">
@@ -353,7 +355,9 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
             <div class="fi"><label>时间范围</label>
               <div class="range"><input type="date" id="fStart"><span>—</span><input type="date" id="fEnd"></div></div>
           </div>
-          <div class="acts">
+          <div class="acts" style="display:flex;align-items:center;gap:8px">
+            <div id="pgBox" style="display:flex;align-items:center;gap:6px;margin-right:6px"></div>
+            <button class="btn ghost" id="btnClear">清空当页</button>
             <button class="btn ghost" id="btnReset">重置</button>
             <button class="btn primary" id="btnQuery">查询</button>
           </div>
@@ -364,13 +368,14 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
           <div style="overflow-x:auto">
             <table class="tbl">
               <thead><tr>
+                <th style="width:36px"><input type="checkbox" id="chkAll" title="全选本页"></th>
                 <th style="width:170px">时间</th><th style="width:90px">平台</th>
                 <th style="width:130px">通道编码</th><th>收款账户</th>
                 <th style="width:100px">金额</th><th style="width:100px">订单状态</th>
                 <th style="width:100px">回调状态</th><th style="width:70px">操作</th>
               </tr></thead>
               <tbody id="logBody">
-                <tr><td colspan="8"><div class="empty">暂无记录</div></td></tr>
+                <tr><td colspan="9"><div class="empty">暂无记录</div></td></tr>
               </tbody>
             </table>
           </div>
@@ -405,7 +410,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         </div>
 
         <div class="card" style="padding:0;overflow:hidden">
-          <div id="lgList" style="max-height:calc(100vh - 320px);overflow-y:auto">
+          <div id="lgList" style="max-height:calc(100vh / 0.9 - 320px);overflow-y:auto">
             <div class="empty">暂无日志</div>
           </div>
         </div>
@@ -474,7 +479,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         <div class="card" style="padding:0">
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">版本号</span>
-            <span style="font-size:14.5px">1.11</span>
+            <span style="font-size:14.5px">1.12</span>
           </div>
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">作者</span>
@@ -531,7 +536,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         <span id="dbgClose" style="cursor:pointer;color:var(--sub);font-size:18px">✕</span>
       </div>
       <div style="font-size:12.5px;color:var(--sub);margin-top:6px">
-        在金额识别之前捕获程序提交的完整 JSON，仅保存在内存中，最多 20 条。
+        公众号消息在金额识别前自动进这里（最多 20 条）；好友 / 群聊消息点「扫好友群聊」按需读取。
       </div>
     </div>
     <div style="padding:12px 22px;display:flex;align-items:center;gap:10px">
@@ -545,6 +550,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
     </div>
     <div style="padding:14px 22px;display:flex;align-items:center;gap:10px;border-top:1px solid var(--line)">
       <button class="btn ghost" id="dbgClear">清空</button>
+      <button class="btn ghost" id="dbgScanAll">扫好友群聊</button>
       <span style="flex:1"></span>
       <button class="btn ghost" id="dbgCopyAll">复制全部</button>
       <button class="btn ghost" id="dbgCopyCur">复制当前</button>
@@ -835,13 +841,54 @@ function dbgRender(){
 }
 
 async function dbgPull(){
-  if(!dbgRun) return;            // 只有捕获中才拉数据
+  // 数据库方案下公众号消息一直在记录，不再依赖「开始捕获」开关
   try{
     const arr = await (await fetch('/api/debug')).json() || [];
-    dbgItems = arr;
-    $('#dbgCount').textContent = `${arr.length} / 20 条`;
-    dbgRender();
+    if(arr.length || dbgRun){
+      dbgItems = arr;
+      $('#dbgCount').textContent = `${arr.length} / 20 条`;
+      dbgRender();
+    }
   }catch(e){}
+}
+
+// 扫好友 / 群聊：读 message_0.db 里所有 Msg_ 表的最新几条
+let dbgScanning = false;
+async function dbgScanFriends(){
+  const btn = $('#dbgScanAll');
+  if(dbgScanning) return;
+  dbgScanning = true;
+  const old = btn.textContent;
+  btn.textContent = '扫描中…';
+  btn.disabled = true;
+  try{
+    const s = await (await fetch('/api/status')).json();
+    let wxid = '';
+    (s.wx_accounts || []).forEach(x => { if(!wxid && x.running) wxid = x.wxid; });
+    const r = await (await fetch('/api/debug/scan?wxid='+encodeURIComponent(wxid))).json();
+    if(!r.ok){ alert('扫描失败: ' + (r.err||'未知错误')); return; }
+    dbgItems = (r.rows||[]).map((x,i)=>({
+      seq: i+1,
+      from: x.from || x.table.slice(0,16),
+      to: '',
+      content: x.preview,
+      display: x.preview,
+      time: x.time,
+      msgid: 0,
+      amount: 0,
+      bytes: (x.preview||'').length,
+      raw_head: '',
+      at: new Date(x.time*1000).toLocaleTimeString('zh-CN',{hour12:false})
+    }));
+    $('#dbgCount').textContent = `${dbgItems.length} 条（好友/群聊）`;
+    dbgRender();
+  }catch(e){
+    alert('扫描失败: ' + e);
+  }finally{
+    dbgScanning = false;
+    btn.textContent = old;
+    btn.disabled = false;
+  }
 }
 
 function dbgCurJSON(){
@@ -863,6 +910,7 @@ function dbgOpenModal(){
 }
 
 $('#btnDebug').onclick = dbgOpenModal;
+$('#dbgScanAll').onclick = dbgScanFriends;
 $('#dbgClose').onclick = $('#dbgClose2').onclick = ()=>{ $('#dbgMask').style.display='none'; dbgOpen=false; };
 $('#dbgMask').onclick = (e)=>{ if(e.target.id==='dbgMask'){ $('#dbgMask').style.display='none'; dbgOpen=false; } };
 
@@ -978,6 +1026,9 @@ async function addWx(){
         });
         el.style.borderColor = 'var(--green)'; el.style.background = 'var(--green-bg)';
         addWxPick = wxid;
+        $('#addWxKey').value = '';
+        $('#addWxKeyHint').style.display = 'none';
+        $('#addWxKeyHint').textContent = '';
         $('#addWxForm').style.display = 'block';
         $('#addWxOk').disabled = false;
         $('#addWxMsg').style.display = 'none';
@@ -994,58 +1045,55 @@ if($('#btnAddWx2')) $('#btnAddWx2').onclick = addWx;
 
 $('#addWxX').onclick = $('#addWxCancel').onclick = ()=>{ $('#addWxMask').style.display='none'; };
 
-let keyWatchTimer = null;
-
-function stopKeyWatch(){
-  if(keyWatchTimer){ clearInterval(keyWatchTimer); keyWatchTimer = null; }
+let keyScanTimer = null;
+function stopKeyScan(){
+  if(keyScanTimer){ clearInterval(keyScanTimer); keyScanTimer = null; }
 }
 
-// 自动获取密钥：先直抓，抓不到就进等待模式（盯微信重启）
+// 自动获取密钥：扫描微信内存（自研，不需要重启微信）
+// 必须带上当前选中的 wxid，后端只按这个账号的密钥库/数据库来验证
 $('#addWxGetKey').onclick = async ()=>{
   const btn = $('#addWxGetKey');
   const hint = $('#addWxKeyHint');
+  if(!addWxPick){ hint.style.display='block'; hint.style.color='var(--red)'; hint.textContent='请先选择账号'; return; }
+
   btn.disabled = true;
   btn.textContent = '获取中…';
   hint.style.display = 'block';
   hint.style.color = 'var(--sub)';
-  hint.textContent = '正在尝试获取密钥…';
+  hint.textContent = '正在扫描微信内存…';
+
   try{
-    const r = await (await fetch('/api/wx/getkey?sec=8',{method:'POST'})).json();
-    if(r.ok && r.key){
-      $('#addWxKey').value = r.key;
-      hint.style.color = 'var(--green)';
-      hint.textContent = '已自动获取密钥';
-      btn.disabled = false; btn.textContent = '自动获取';
-      return;
-    }
-    // 进等待模式
-    hint.style.color = 'var(--sub)';
-    hint.textContent = '微信已开过库，hook 不触发。正进入等待模式…';
-    await fetch('/api/wx/getkey/watch?sec=300',{method:'POST'});
-    hint.textContent = '等待中：请完全退出微信，再重新打开并登录';
-    stopKeyWatch();
-    keyWatchTimer = setInterval(async ()=>{
+    await fetch('/api/wx/getkey/async?wxid=' + encodeURIComponent(addWxPick), {method:'POST'});
+    stopKeyScan();
+    keyScanTimer = setInterval(async ()=>{
       try{
-        const s = await (await fetch('/api/wx/getkey/status')).json();
-        hint.style.color = 'var(--sub)';
-        hint.textContent = s.state || '等待中…';
+        const s = await (await fetch('/api/wx/getkey/progress')).json();
+        if(s.running){
+          hint.style.color = 'var(--sub)';
+          hint.textContent = s.total > 0
+            ? `验证候选 ${s.done} / ${s.total}（首次约 1-3 分钟）`
+            : (s.phase || '扫描中…');
+          return;
+        }
+        stopKeyScan();
+        btn.disabled = false;
+        btn.textContent = '自动获取';
         if(s.ok && s.key){
           $('#addWxKey').value = s.key;
           hint.style.color = 'var(--green)';
           hint.textContent = '已自动获取密钥';
-          stopKeyWatch();
-          btn.disabled = false; btn.textContent = '自动获取';
-        }
-        if(!s.active && !s.ok){
-          stopKeyWatch();
-          btn.disabled = false; btn.textContent = '自动获取';
+        }else{
+          hint.style.color = 'var(--red)';
+          hint.textContent = s.note || '没取到密钥';
         }
       }catch(e){}
-    }, 900);
+    }, 1000);
   }catch(e){
     hint.style.color = 'var(--red)';
     hint.textContent = '请求失败：' + e;
-    btn.disabled = false; btn.textContent = '自动获取';
+    btn.disabled = false;
+    btn.textContent = '自动获取';
   }
 };
 $('#addWxMask').onclick = (e)=>{ if(e.target.id==='addWxMask') $('#addWxMask').style.display='none'; };
@@ -1129,7 +1177,7 @@ $('#closeMask').onclick = (e)=>{ if(e.target.id==='closeMask') closeDialog(); };
 window.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDialog(); });
 
 /* ---------- 收款记录表格 ---------- */
-let allMsgs = [], shownMsgs = [];
+let allMsgs = [], shownMsgs = [], selectedIDs = new Set();
 
 function fmtFull(ts){
   if(!ts) return '—';
@@ -1149,26 +1197,156 @@ function cbBadge(s){
   return '<span class="st skip">'+(s||'未上报')+'</span>';
 }
 
+let pageNo = 1;
+const PAGE_SIZE = 10;
+
+function pageCount(){
+  return Math.max(1, Math.ceil(shownMsgs.length / PAGE_SIZE));
+}
+
+// 渲染分页控件
+function renderPager(){
+  const box = $('#pgBox');
+  if(!box) return;
+  const total = pageCount();
+  if(pageNo > total) pageNo = total;
+  if(pageNo < 1) pageNo = 1;
+
+  const mk = (label, page, disabled, active) =>
+    `<button class="btn ghost" data-pg="${page}" ${disabled?'disabled':''}
+      style="height:30px;min-width:30px;padding:0 9px;font-size:12.5px;
+      ${active?'background:var(--green);color:#fff;border-color:var(--green);':''}
+      ${disabled?'opacity:.4;cursor:default;':''}">${label}</button>`;
+
+  let html = mk('‹', pageNo - 1, pageNo <= 1, false);
+  let from = Math.max(1, pageNo - 2);
+  let to = Math.min(total, from + 4);
+  if(to - from < 4) from = Math.max(1, to - 4);
+  for(let p = from; p <= to; p++){
+    html += mk(String(p), p, false, p === pageNo);
+  }
+  html += mk('›', pageNo + 1, pageNo >= total, false);
+  html += `<span style="font-size:12.5px;color:var(--sub);margin-left:4px">${pageNo}/${total} 页</span>`;
+
+  box.innerHTML = html;
+  box.querySelectorAll('[data-pg]').forEach(b => {
+    if(b.disabled) return;
+    b.onclick = () => { pageNo = parseInt(b.dataset.pg, 10); renderTable(); };
+  });
+}
+
 function renderTable(){
   const tb = $('#logBody');
+  const total = pageCount();
+  if(pageNo > total) pageNo = total;
+  if(pageNo < 1) pageNo = 1;
+
   if(!shownMsgs.length){
-    tb.innerHTML = '<tr><td colspan="8"><div class="empty">暂无记录</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="9"><div class="empty">暂无记录</div></td></tr>';
   } else {
-    tb.innerHTML = shownMsgs.map((m,i)=>`<tr>
-      <td>${fmtFull(m.time)}</td>
-      <td>${esc(m.platform||'微信')}</td>
-      <td class="mono">${esc(m.channel_code||'jk_wechat_pc')}</td>
-      <td class="mono">${esc(m.to||'—')}</td>
-      <td style="font-weight:600">${(m.amount||0)>0?'¥'+m.amount.toFixed(2):'—'}</td>
-      <td>${orderBadge(m.order_status)}</td>
-      <td>${cbBadge(m.callback_status)}</td>
-      <td><span class="lnk" data-i="${i}">查看</span></td>
-    </tr>`).join('');
+    const start = (pageNo - 1) * PAGE_SIZE;
+    const rows = shownMsgs.slice(start, start + PAGE_SIZE);
+    tb.innerHTML = rows.map((m, k)=>{
+      const gi = start + k;   // 在 shownMsgs 里的绝对索引
+      const on = m.id && selectedIDs.has(m.id);
+      return `<tr>
+        <td><input type="checkbox" data-sel="${gi}" ${on?'checked':''}></td>
+        <td>${fmtFull(m.time)}</td>
+        <td>${esc(m.platform||'微信')}</td>
+        <td class="mono">${esc(m.channel_code||'jk_wechat_pc')}</td>
+        <td class="mono">${esc(m.to||'—')}</td>
+        <td style="font-weight:600">${(m.amount||0)>0?'¥'+m.amount.toFixed(2):'—'}</td>
+        <td>${orderBadge(m.order_status)}</td>
+        <td>${cbBadge(m.callback_status)}</td>
+        <td><span class="lnk" data-i="${gi}">查看</span></td>
+      </tr>`;
+    }).join('');
     tb.querySelectorAll('.lnk').forEach(el=>el.onclick=()=>showDetail(shownMsgs[+el.dataset.i]));
+    tb.querySelectorAll('[data-sel]').forEach(el=>{
+      el.onchange = ()=>{
+        const m = shownMsgs[+el.dataset.sel];
+        if(!m || !m.id) return;
+        if(el.checked) selectedIDs.add(m.id); else selectedIDs.delete(m.id);
+        syncClearBtn();
+        syncChkAll();
+      };
+    });
   }
   $('#logTotal').textContent = shownMsgs.length;
   $('#logCount') && ($('#logCount').textContent = `共 ${shownMsgs.length} 条`);
+  renderPager();
+  syncChkAll();
+  syncClearBtn();
 }
+
+// 表头全选状态
+function syncChkAll(){
+  const all = $('#chkAll');
+  if(!all) return;
+  const start = (pageNo - 1) * PAGE_SIZE;
+  const rows = shownMsgs.slice(start, start + PAGE_SIZE).filter(m=>m.id);
+  const sel = rows.filter(m=>selectedIDs.has(m.id)).length;
+  all.checked = rows.length > 0 && sel === rows.length;
+  all.indeterminate = sel > 0 && sel < rows.length;
+}
+
+// 按钮文案随勾选数量变化
+function syncClearBtn(){
+  const b = $('#btnClear');
+  if(!b) return;
+  const n = selectedIDs.size;
+  b.textContent = n > 0 ? `删除选中（${n}）` : '清空当页';
+  b.style.color = n > 0 ? 'var(--red)' : '';
+  b.style.borderColor = n > 0 ? 'var(--red)' : '';
+}
+
+// 表头全选 / 取消全选（只作用于当前页）
+document.addEventListener('change', (e)=>{
+  if(e.target && e.target.id === 'chkAll'){
+    const start = (pageNo - 1) * PAGE_SIZE;
+    const rows = shownMsgs.slice(start, start + PAGE_SIZE);
+    rows.forEach(m=>{
+      if(!m.id) return;
+      if(e.target.checked) selectedIDs.add(m.id); else selectedIDs.delete(m.id);
+    });
+    document.querySelectorAll('#logBody [data-sel]').forEach(cb=>{ cb.checked = e.target.checked; });
+    syncClearBtn();
+    syncChkAll();
+  }
+});
+
+// 清空：有勾选删勾选的，没勾选删整页
+$('#btnClear').onclick = async ()=>{
+  if(!shownMsgs.length){ toast('当前没有记录'); return; }
+
+  const start = (pageNo - 1) * PAGE_SIZE;
+  const pageRows = shownMsgs.slice(start, start + PAGE_SIZE);
+  if(!pageRows.length){ toast('当前页没有记录'); return; }
+
+  // 勾选的优先；勾选可能跨页，从全部记录里找
+  let targets, label;
+  if(selectedIDs.size > 0){
+    targets = shownMsgs.filter(m => m.id && selectedIDs.has(m.id));
+    label = `选中的 ${targets.length} 条`;
+  }else{
+    targets = pageRows;
+    label = `当前第 ${pageNo} 页的 ${targets.length} 条`;
+  }
+  if(!targets.length){ toast('没有可删除的记录'); return; }
+  if(!confirm(`确定删除${label}记录？\n只删除记录，不影响微信数据和已上报的订单。`)) return;
+
+  const ids = targets.map(m => m.id).filter(Boolean);
+  if(!ids.length){ toast('记录缺少标识，无法删除'); return; }
+  try{
+    const r = await (await fetch('/api/messages/delete',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ids})
+    })).json();
+    selectedIDs.clear();
+    toast('已删除 ' + (r.removed||0) + ' 条');
+    await refresh();
+  }catch(e){ alert('删除失败: ' + e); }
+};
 
 function applyFilter(){
   const pf=$('#fPlatform').value, acc=$('#fAccount').value.trim().toLowerCase();
@@ -1190,13 +1368,14 @@ function applyFilter(){
     if(en && t>en) return false;
     return true;
   });
+  pageNo = 1;
   renderTable();
 }
 
 $('#btnQuery').onclick = applyFilter;
 $('#btnReset').onclick = ()=>{
   ['fPlatform','fAccount','fMin','fMax','fOrder','fCb','fStart','fEnd'].forEach(id=>$('#'+id).value='');
-  shownMsgs = allMsgs.slice(); renderTable();
+  shownMsgs = allMsgs.slice(); pageNo = 1; renderTable();
 };
 
 function showDetail(m){
@@ -1232,23 +1411,29 @@ async function refreshAccounts(){
       return;
     }
     const s = await (await fetch('/api/status')).json();
+    // 多账号：按 wxid 匹配各自的监控状态
+    const stMap = {};
+    (s.wx_accounts || []).forEach(x => { stMap[x.wxid] = x; });
     box.innerHTML = arr.map(a=>{
-      const live = s.attached;
+      const st = stMap[a.wxid];
+      const live = !!(st && st.running);
+      const rounds = st ? (st.poll_rounds || 0) : 0;
+      const detail = live ? ` · 轮询 ${rounds} 次` : '';
       return `<div style="display:flex;align-items:center;gap:14px;padding:15px 18px;border-bottom:1px solid var(--line)">
-        <div style="width:44px;height:44px;border-radius:11px;background:var(--green);color:#fff;
+        <div style="width:44px;height:44px;border-radius:11px;background:${live?'var(--green)':'#B9BDC6'};color:#fff;
           display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">✆</div>
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <span style="font-size:15.5px;font-weight:600">${esc(a.nick || a.wxid)}${live?' · PID '+s.pid:''}</span>
-            <span class="badge${live?' on':''}"><span class="d"></span>${live?'监听中':'未连接'}</span>
+            <span style="font-size:15.5px;font-weight:600">${esc(a.nick || a.wxid)}</span>
+            <span class="badge${live?' on':''}"><span class="d"></span>${live?'监听中':'未运行'}</span>
             ${a.channel_id?`<span class="badge on"><span class="d"></span>通道 ${esc(a.channel_id)}</span>`:'<span class="badge"><span class="d"></span>未绑定通道</span>'}
           </div>
           <div style="font-size:12.5px;color:var(--sub);margin-top:5px">
-            <span class="mono">${esc(a.wxid)}</span> · 64 位微信适配${a.note?' · '+esc(a.note):''}
+            <span class="mono">${esc(a.wxid)}</span> · 64 位微信适配${detail}${a.note?' · '+esc(a.note):''}
           </div>
         </div>
         <button class="btn ghost" data-bind="${esc(a.wxid)}" style="height:32px;font-size:13px">绑定通道ID</button>
-        ${a.channel_id?`<button class="btn ghost" data-del="${esc(a.wxid)}" style="height:32px;font-size:13px;color:var(--red);border-color:var(--red)">删除</button>`:''}
+        <button class="btn ghost" data-del="${esc(a.wxid)}" style="height:32px;font-size:13px;color:var(--red);border-color:var(--red)">删除</button>
       </div>`;
     }).join('');
     box.querySelectorAll('[data-bind]').forEach(b=>b.onclick=()=>openBind(b.dataset.bind));
@@ -1359,6 +1544,19 @@ refreshWx(); refreshLogs(); refreshEnv(); refreshAccounts();
 </script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

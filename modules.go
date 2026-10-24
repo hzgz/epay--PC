@@ -49,3 +49,10 @@ func findModule(pid uint32, dllName string) (uintptr, uint32, error) {
 	}
 	return 0, 0, fmt.Errorf("未找到模块 %s", dllName)
 }
+
+// processHasModule 判断进程是否加载了指定模块。
+// 微信多开时只有主进程加载 Weixin.dll，子进程没有，用这个筛选。
+func processHasModule(pid uint32, dllName string) bool {
+	_, _, err := findModule(pid, dllName)
+	return err == nil
+}

@@ -13,7 +13,6 @@ import (
 
 //go:embed native/WCDB.dll
 //go:embed native/wxtool_wcdb.dll
-//go:embed native/wx_key.dll
 var nativeFS embed.FS
 
 var nativeDirCached string
@@ -43,7 +42,7 @@ func nativeDir() (string, error) {
 		return "", fmt.Errorf("创建 DLL 目录失败: %w", err)
 	}
 
-	for _, name := range []string{"WCDB.dll", "wxtool_wcdb.dll", "wx_key.dll"} {
+	for _, name := range []string{"WCDB.dll", "wxtool_wcdb.dll"} {
 		data, err := nativeFS.ReadFile("native/" + name)
 		if err != nil {
 			return "", fmt.Errorf("内置资源缺失 %s: %w", name, err)
@@ -80,3 +79,4 @@ func sameFile(path string, want []byte) bool {
 	}
 	return sha256.Sum256(old) == sha256.Sum256(want)
 }
+

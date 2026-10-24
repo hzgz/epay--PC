@@ -40,9 +40,39 @@ type Config struct {
 	WeChatExe   string `json:"wechat_exe"`
 
 	// 数据库读取（公众号/服务号消息）
-	DbEnabled bool   `json:"db_enabled"` // 是否启用数据库读取
-	DbWxid    string `json:"db_wxid"`    // 微信账号 wxid
-	DbKey     string `json:"db_key"`     // 数据库密钥（64 位 hex）
+	DbEnabled bool        `json:"db_enabled"`  // 是否启用数据库读取
+	DbAccounts []DbAccount `json:"db_accounts"` // 多账号列表
+	// 旧版单账号字段，启动时自动并入 DbAccounts
+	DbWxid string `json:"db_wxid,omitempty"`
+	DbKey  string `json:"db_key,omitempty"`
+}
+
+// DbAccount 一个需要监控的微信账号
+type DbAccount struct {
+	Wxid    string `json:"wxid"`
+	Key     string `json:"key"`
+	Enabled bool   `json:"enabled"`
+}
+
+// EffectiveDbAccounts 返回真正要监控的账号列表，含旧字段迁移
+func (c Config) EffectiveDbAccounts() []DbAccount {
+	out := make([]DbAccount, 0, len(c.DbAccounts)+1)
+	seen := map[string]bool{}
+	for _, a := range c.DbAccounts {
+		if a.Wxid == "" || a.Key == "" || !a.Enabled {
+			continue
+		}
+		if seen[a.Wxid] {
+			continue
+		}
+		seen[a.Wxid] = true
+		out = append(out, a)
+	}
+	// 旧版单账号：并入但不重复
+	if c.DbWxid != "" && c.DbKey != "" && !seen[c.DbWxid] {
+		out = append(out, DbAccount{Wxid: c.DbWxid, Key: c.DbKey, Enabled: true})
+	}
+	return out
 }
 
 var (

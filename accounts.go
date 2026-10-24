@@ -111,26 +111,37 @@ func removeAccount(wxid string) {
 	saveAccounts()
 }
 
-// deleteAccountAll 删除一个账号的全部配置：账号记录、通道绑定、数据库监控、db_wxid/db_key。
+// deleteAccountAll 删除一个账号的全部配置：账号记录、通道绑定、数据库监控、密钥。
 // 订单记录（records.json）和支付信息一律保留，方便对账。
 func deleteAccountAll(wxid string) {
 	removeAccount(wxid)
 
-	// 停掉该账号的数据库监控
-	if st := WxStatus(); st.Running && st.Wxid == wxid {
-		StopWxMonitor()
-		logInfo("config", "已停止账号 %s 的数据库监控", wxid)
-	}
+	// 停掉该账号的数据库监控（不影响其他账号）
+	StopWxMonitorFor(wxid)
+	logInfo("config", "已停止账号 %s 的数据库监控", wxid)
 
-	// 清掉配置里的数据库账号与密钥（不影响别的账号）
+	// 从多账号配置里移除该账号
 	c := GetConfig()
-	if c.DbWxid == wxid {
-		cfg := c
+	cfg := c
+	kept := make([]DbAccount, 0, len(cfg.DbAccounts))
+	changed := false
+	for _, a := range cfg.DbAccounts {
+		if a.Wxid == wxid {
+			changed = true
+			continue
+		}
+		kept = append(kept, a)
+	}
+	cfg.DbAccounts = kept
+	// 旧版单账号字段指向它时一并清掉
+	if cfg.DbWxid == wxid {
 		cfg.DbWxid = ""
 		cfg.DbKey = ""
-		cfg.DbEnabled = false
+		changed = true
+	}
+	if changed {
 		SetConfig(cfg)
-		logInfo("config", "已清除数据库配置 wxid=%s", wxid)
+		logInfo("config", "已清除账号 %s 的数据库配置", wxid)
 	}
 
 	logInfo("config", "账号已删除 %s（订单记录与支付信息保留）", wxid)
