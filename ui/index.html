@@ -1,0 +1,1135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>易监控</title>
+<style>
+:root{
+  --green:#07C160; --green-dark:#059B4C; --green-bg:#E8F8EE;
+  --bg:#F7F8FA; --card:#FFFFFF;
+  /* 对比度：正文 14.8:1、副文 6.4:1、提示 4.6:1（白底） */
+  --text:#111827; --sub:#4E5765; --hint:#6B7482;
+  --line:#E3E6EB; --red:#D92D20; --blue:#1256D0; --blue-bg:#E8F1FF;
+  --orange:#B86E00; --orange-bg:#FFF4E0; --purple:#6D3FD1; --purple-bg:#F1EBFF;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg);color:var(--text);overflow:hidden;font-size:14px;-webkit-font-smoothing:antialiased;}
+.app{display:flex;height:100vh;}
+
+/* 左侧导航 */
+.side{width:196px;background:var(--green);display:flex;flex-direction:column;flex-shrink:0;}
+.brand{padding:22px 18px 18px;font-size:17px;font-weight:600;color:#fff;}
+.brand small{display:block;font-size:12.5px;color:rgba(255,255,255,.78);font-weight:400;margin-top:4px;}
+.nav{flex:1;padding-top:4px;}
+.nav a{display:flex;align-items:center;gap:10px;padding:12px 18px;font-size:15px;color:rgba(255,255,255,.88);text-decoration:none;cursor:pointer;}
+.nav a:hover{background:rgba(255,255,255,.14);}
+.nav a.on{background:var(--green-dark);color:#fff;font-weight:500;}
+.nav a .ic{width:16px;text-align:center;}
+.side-foot{padding:12px 18px;font-size:12px;color:rgba(255,255,255,.62);border-top:1px solid rgba(255,255,255,.18);}
+
+.main{flex:1;display:flex;flex-direction:column;min-width:0;}
+.top{height:48px;background:var(--card);border-bottom:1px solid var(--line);display:flex;align-items:center;
+  padding:0 20px;gap:10px;flex-shrink:0;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--hint);}
+.dot.ok{background:var(--green);}
+.dot.bad{background:var(--red);}
+.status-txt{font-size:14px;color:var(--sub);}
+.top h1{font-size:16px;font-weight:600;margin-left:8px;}
+.top .sp{flex:1;}
+.btn{height:34px;padding:0 15px;border:none;border-radius:6px;font-size:14px;cursor:pointer;font-family:inherit;}
+.btn.primary{background:var(--green);color:#fff;}
+.btn.primary:hover{background:var(--green-dark);}
+.btn.ghost{background:#F2F4F6;color:#4E5969;}
+.btn.ghost:hover{background:#E9ECEF;}
+
+.content{flex:1;overflow-y:auto;padding:16px 20px 28px;}
+.page{display:none;}
+.page.on{display:block;}
+
+/* 四宫格统计 */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px;}
+.kpi{background:var(--card);border-radius:12px;padding:16px 18px;display:flex;align-items:center;gap:14px;
+  cursor:default;transition:box-shadow .15s;}
+.kpi:hover{box-shadow:0 2px 12px rgba(0,0,0,.06);}
+.kpi .ic{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  font-size:20px;flex-shrink:0;}
+.kpi .ic.y{background:var(--orange-bg);color:var(--orange);}
+.kpi .ic.b{background:var(--blue-bg);color:var(--blue);}
+.kpi .ic.g{background:var(--green-bg);color:var(--green);}
+.kpi .ic.p{background:var(--purple-bg);color:var(--purple);}
+.kpi .bd{flex:1;min-width:0;}
+.kpi .k{font-size:13.5px;color:var(--sub);margin-bottom:6px;}
+.kpi .v{font-size:24px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;line-height:1.1;}
+.kpi .v.green{color:var(--green);}
+.kpi .v.purple{color:var(--purple);}
+.kpi .s{font-size:13px;color:var(--hint);margin-top:7px;}
+.kpi .arw{color:#D8DCE1;font-size:16px;}
+
+/* 卡片 */
+.card{background:var(--card);border-radius:12px;padding:18px 20px;margin-bottom:14px;}
+.card .head{margin-bottom:14px;}
+.card .head h2{font-size:16px;font-weight:600;color:var(--text);}
+.card .head p{font-size:13.5px;color:var(--sub);margin-top:5px;line-height:1.6;}
+.card .head .more{float:right;font-size:13.5px;color:var(--blue);cursor:pointer;}
+.card .head .more:hover{text-decoration:underline;}
+
+/* 账号状态 */
+.accts{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+.acct{border-radius:10px;padding:14px 16px;display:flex;align-items:center;gap:12px;}
+.acct.wx{background:#F0FBF4;border:1px solid #DFF5E7;}
+.acct.ch{background:#F2F8FF;border:1px solid #E3EFFE;}
+.acct.st{background:#FFF9EF;border:1px solid #FDEFD6;}
+.acct .ic{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:19px;color:#fff;}
+.acct.wx .ic{background:var(--green);}
+.acct.ch .ic{background:var(--blue);}
+.acct.st .ic{background:var(--orange);}
+.acct .bd{flex:1;min-width:0;}
+.acct .nm{font-size:13.5px;color:var(--sub);}
+.acct .num{font-size:22px;font-weight:600;color:var(--text);line-height:1.2;}
+.acct .right{text-align:right;}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:3px 9px;border-radius:11px;
+  background:rgba(0,0,0,.05);color:var(--sub);}
+.badge .d{width:6px;height:6px;border-radius:50%;background:currentColor;}
+.badge.on{background:var(--green-bg);color:var(--green);}
+.acct .foot{display:flex;justify-content:space-between;font-size:12.5px;color:var(--sub);margin-top:10px;}
+
+/* 事件列表 */
+.ev{display:flex;gap:12px;padding:13px 0;border-bottom:1px solid var(--line);}
+.ev:last-child{border-bottom:none;}
+.ev .ic{width:34px;height:34px;border-radius:9px;background:var(--green-bg);color:var(--green);
+  display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
+.ev .bd{flex:1;min-width:0;}
+.ev .txt{font-size:15px;color:var(--text);line-height:1.62;word-break:break-all;
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+.ev .meta{font-size:13px;color:var(--hint);margin-top:6px;}
+.ev .r{flex-shrink:0;text-align:right;}
+.tag{display:inline-block;font-size:13px;padding:2px 0;color:var(--green-dark);font-weight:500;}
+.tag.fail{color:var(--red);}
+.tag.skip{color:var(--hint);}
+.empty{text-align:center;padding:44px 0;color:var(--hint);font-size:14px;}
+
+/* 表单 */
+.field{margin-bottom:16px;}
+.field label{display:block;font-size:14px;color:var(--sub);margin-bottom:8px;}
+.field input{width:100%;border:1px solid #D8DCE2;border-radius:7px;padding:10px 13px;font-size:15px;
+  font-family:inherit;outline:none;background:#FAFBFC;color:var(--text);}
+.field input:focus{border-color:var(--green);background:#fff;}
+.field .hint{font-size:12.5px;color:var(--hint);margin-top:7px;line-height:1.6;}
+.radio-row{display:flex;gap:12px;flex-wrap:wrap;}
+.radio{flex:1;min-width:150px;border:1px solid #D8DCE2;border-radius:8px;padding:12px 14px;cursor:pointer;background:#FAFBFC;}
+.radio.on{border-color:var(--green);background:var(--green-bg);}
+.radio .t{font-size:14.5px;font-weight:500;color:var(--text);}
+.radio.on .t{color:var(--green-dark);}
+.radio .d{font-size:12.5px;color:var(--sub);margin-top:5px;line-height:1.55;}
+.row{display:flex;gap:14px;}
+.row .field{flex:1;}
+.save-bar{position:sticky;bottom:0;background:var(--bg);padding:14px 0 0;}
+.btn-save{height:40px;padding:0 28px;border:none;border-radius:7px;background:var(--green);color:#fff;
+  font-size:14px;font-weight:500;font-family:inherit;cursor:pointer;}
+.btn-save:hover{background:var(--green-dark);}
+
+/* 表格 */
+.sel{width:100%;border:1px solid #D8DCE2;border-radius:7px;padding:10px 13px;font-size:15px;
+  font-family:inherit;outline:none;background:#FAFBFC;color:var(--text);cursor:pointer;}
+.sel:focus{border-color:var(--green);background:#fff;}
+
+/* 收款记录筛选区（紧凑版） */
+.fbox{padding:12px 16px 10px;}
+.fbox .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px 16px;}
+.fbox .fi{display:flex;flex-direction:column;}
+.fbox .fi > label{font-size:12.5px;color:var(--sub);margin-bottom:5px;}
+.fbox .fi input,.fbox .fi select{width:100%;border:1px solid #D8DCE2;border-radius:6px;
+  padding:6px 10px;font-size:13.5px;height:32px;font-family:inherit;outline:none;
+  background:#FAFBFC;color:var(--text);}
+.fbox .fi select{cursor:pointer;padding:6px 8px;}
+.fbox .fi input:focus,.fbox .fi select:focus{border-color:var(--green);background:#fff;}
+.fbox .range{display:flex;align-items:center;gap:6px;}
+.fbox .range input{flex:1;min-width:0;}
+.fbox .range span{color:var(--hint);font-size:12px;}
+.fbox .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:10px;}
+.fbox .acts .btn{height:30px;padding:0 16px;font-size:13px;}
+.tbl{width:100%;border-collapse:collapse;font-size:14px;}
+.tbl th{background:#FCFBF6;color:var(--sub);font-weight:500;text-align:left;padding:13px 14px;
+  border-bottom:1px solid var(--line);white-space:nowrap;}
+.tbl td{padding:14px;border-bottom:1px solid var(--line);color:var(--text);vertical-align:middle;}
+.tbl tbody tr:hover td{background:#FAFBFD;}
+.tbl tbody tr:last-child td{border-bottom:none;}
+.st{display:inline-block;padding:3px 10px;border-radius:11px;font-size:12.5px;white-space:nowrap;}
+.st.ok{background:#E8F8EE;color:#059B4C;}
+.st.fail{background:#FEECEC;color:#D92D20;}
+.st.skip{background:#F2F4F6;color:var(--sub);}
+.lnk{color:var(--blue);cursor:pointer;font-size:14px;}
+.lnk:hover{text-decoration:underline;}
+.mono{font-family:Consolas,"Courier New",monospace;font-size:13px;}
+
+/* 运行环境 */
+.env-cell{padding:16px 18px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);}
+.env-cell:nth-child(4n){border-right:none;}
+.env-cell:nth-child(n+5){border-bottom:none;}
+.env-cell .k{font-size:12.5px;color:var(--sub);margin-bottom:7px;}
+.env-cell .v{font-size:15.5px;font-weight:500;color:var(--text);}
+.env-cell .v.ok{color:#059B4C;}
+.env-cell .v.bad{color:#D92D20;}
+.env-cell .v.warn{color:#B86E00;}
+
+/* 详情弹窗 */
+.dt-grid{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:9px;overflow:hidden;}
+.dt-cell{padding:14px 16px;border-bottom:1px solid var(--line);}
+.dt-cell:nth-child(odd){border-right:1px solid var(--line);}
+.dt-cell .k{font-size:12.5px;color:var(--sub);margin-bottom:6px;}
+.dt-cell .v{font-size:14.5px;color:var(--text);word-break:break-all;}
+.dt-sec{font-size:13.5px;color:var(--sub);margin:18px 0 9px;}
+.dt-pre{background:#FAFBFC;border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+  font-size:13px;color:var(--text);line-height:1.65;white-space:pre-wrap;word-break:break-all;
+  max-height:160px;overflow:auto;font-family:Consolas,"Courier New",monospace;}
+
+.toast{position:fixed;left:50%;top:64px;transform:translateX(-50%);background:rgba(0,0,0,.8);color:#fff;
+  padding:9px 20px;border-radius:7px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:99;}
+.toast.on{opacity:1;}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="side">
+    <div class="brand">易监控<small>微信收款消息监听</small></div>
+    <div class="nav">
+      <a class="on" data-page="home"><span class="ic">▦</span>总览</a>
+      <a data-page="wx"><span class="ic">✆</span>微信账号</a>
+      <a data-page="logs"><span class="ic">☰</span>收款记录</a>
+      <a data-page="runlog"><span class="ic">▤</span>运行日志</a>
+      <a data-page="settings"><span class="ic">⚙</span>通知设置</a>
+      <a data-page="about"><span class="ic">ⓘ</span>关于</a>
+    </div>
+    <div class="side-foot">v1.10</div>
+  </div>
+
+  <div class="main">
+    <div class="top">
+      <span class="dot" id="dot"></span>
+      <span class="status-txt" id="status">正在检查…</span>
+      <h1 id="pageTitle">首页</h1>
+      <span class="sp"></span>
+      <button class="btn ghost" id="btnRefresh">刷新</button>
+      <button class="btn primary" id="btnReinject">重新连接</button>
+    </div>
+
+    <div class="content">
+      <!-- 首页 -->
+      <div class="page on" id="page-home">
+        <div class="kpis">
+          <div class="kpi">
+            <div class="ic y">￥</div>
+            <div class="bd"><div class="k">今日收款</div><div class="v" id="kToday">¥0.00</div>
+              <div class="s"><span id="kTodayCnt">0</span> 笔事件</div></div>
+            <span class="arw">›</span>
+          </div>
+          <div class="kpi">
+            <div class="ic b">▤</div>
+            <div class="bd"><div class="k">昨日收款</div><div class="v" id="kYday">¥0.00</div>
+              <div class="s"><span id="kYdayCnt">0</span> 笔事件</div></div>
+            <span class="arw">›</span>
+          </div>
+          <div class="kpi">
+            <div class="ic g">￥</div>
+            <div class="bd"><div class="k">近七日收款</div><div class="v green" id="kWeek">¥0.00</div>
+              <div class="s"><span id="kWeekCnt">0</span> 笔事件</div></div>
+            <span class="arw">›</span>
+          </div>
+          <div class="kpi">
+            <div class="ic p">♥</div>
+            <div class="bd"><div class="k">回调成功率</div><div class="v purple" id="kRate">—</div>
+              <div class="s"><span id="kAllCnt">0</span> 条累计记录</div></div>
+            <span class="arw">›</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="head"><h2>账户状态总览</h2><p>监听与上报运行状态</p></div>
+          <div class="accts">
+            <div class="acct wx">
+              <div class="ic">✆</div>
+              <div class="bd"><div class="nm">微信账号</div><div class="num" id="aWxNum">0</div>
+                <div class="foot"><span>在线 <b id="aWxOn">0</b></span><span>离线 <b>0</b></span></div></div>
+              <div class="right"><span class="badge" id="aWxBadge"><span class="d"></span>未运行</span></div>
+            </div>
+            <div class="acct ch">
+              <div class="ic">⇪</div>
+              <div class="bd"><div class="nm">上报通道</div><div class="num" id="aChNum">0</div>
+                <div class="foot"><span>成功 <b id="aChOk">0</b></span><span>失败 <b id="aChFail">0</b></span></div></div>
+              <div class="right"><span class="badge" id="aChBadge"><span class="d"></span>未配置</span></div>
+            </div>
+            <div class="acct st">
+              <div class="ic">◈</div>
+              <div class="bd"><div class="nm">消息监听</div><div class="num" id="aLsNum">0</div>
+                <div class="foot"><span>扫描 <b id="aLsScan">0</b></span><span>识别 <b id="aLsMsg">0</b></span></div></div>
+              <div class="right"><span class="badge" id="aLsBadge"><span class="d"></span>未启动</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="head"><h2>实时事件</h2><p>最新监控记录</p>
+            <span class="more" id="goLogs">全部记录 ›</span></div>
+          <div id="recent"><div class="empty">暂无消息</div></div>
+        </div>
+      </div>
+
+      <!-- 微信账号 -->
+      <div class="page" id="page-wx">
+        <div class="card" style="padding:0;overflow:hidden">
+          <div style="padding:18px 20px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--line)">
+            <div style="font-size:16px;font-weight:600">微信账号</div>
+            <span style="font-size:11.5px;color:var(--green);background:var(--green-bg);padding:3px 9px;border-radius:10px">官方版</span>
+            <span style="flex:1"></span>
+            <button class="btn ghost" id="btnDebug">消息调试</button>
+            <button class="btn primary" id="btnAddWx">添加微信账号</button>
+          </div>
+          <div style="padding:10px 20px;font-size:12.5px;color:var(--sub)">
+            登录账号与程序健康状态，本软件不会修改微信进程的任何内存行为。
+          </div>
+        </div>
+
+        <div class="card" style="display:flex;align-items:center;gap:14px">
+          <div class="ic" style="width:40px;height:40px;border-radius:10px;background:var(--green-bg);
+            color:var(--green);display:flex;align-items:center;justify-content:center;font-size:19px">✆</div>
+          <div style="flex:1">
+            <div style="font-size:13.5px;color:var(--text)">微信程序已定位</div>
+            <div style="font-size:12px;color:var(--sub);margin-top:3px" id="wxPath">—</div>
+          </div>
+          <span class="badge" id="wxBadge2"><span class="d"></span>未运行</span>
+        </div>
+
+        <div class="card">
+          <div style="padding:0">
+          <div style="padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center">
+            <span style="font-size:15px;font-weight:600">已接入账号</span>
+            <span style="font-size:12.5px;color:var(--sub);margin-left:10px" id="accCount">0 个</span>
+            <span style="flex:1"></span>
+            <button class="btn primary" id="btnAddWx3" style="height:32px;font-size:13px">添加微信账号</button>
+          </div>
+          <div id="accList2">
+            <div class="empty">暂无账号，点击右上角添加</div>
+          </div>
+        </div>
+      </div>
+        <div class="card">
+          <div class="head"><h2>运行信息</h2><p>实时监控状态</p></div>
+          <div class="accts">
+            <div class="acct wx"><div class="ic">✆</div><div class="bd">
+              <div class="nm">微信版本</div><div class="num" style="font-size:17px" id="wxVer">—</div></div></div>
+            <div class="acct ch"><div class="ic">⇪</div><div class="bd">
+              <div class="nm">上报通道</div><div class="num" style="font-size:17px" id="chMode">—</div></div></div>
+            <div class="acct st"><div class="ic">◈</div><div class="bd">
+              <div class="nm">最后心跳</div><div class="num" style="font-size:17px" id="lastBeat">—</div></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 收款记录 -->
+      <div class="page" id="page-logs">
+        <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px">
+          <h2 style="font-size:20px;font-weight:600">收款记录</h2>
+          <span style="flex:1"></span>
+          <span style="font-size:13px;color:var(--sub)">当前 <b id="logTotal">0</b> 条记录</span>
+        </div>
+        <div style="font-size:13.5px;color:var(--sub);margin-bottom:14px">查询并展示所有渠道的收款记录、订单状态和商户回调信息。</div>
+
+        <!-- 筛选 -->
+        <div class="card fbox">
+          <div class="grid">
+            <div class="fi"><label>平台</label>
+              <select id="fPlatform"><option value="">全部平台</option><option value="微信">微信</option></select></div>
+            <div class="fi"><label>收款账户</label>
+              <input id="fAccount" placeholder="请输入收款账户"></div>
+            <div class="fi"><label>金额</label>
+              <div class="range"><input id="fMin" placeholder="最小金额"><span>—</span><input id="fMax" placeholder="最大金额"></div></div>
+            <div class="fi"><label>订单状态</label>
+              <select id="fOrder"><option value="">全部状态</option>
+                <option value="已收款">已收款</option><option value="未识别">未识别</option></select></div>
+            <div class="fi"><label>回调状态</label>
+              <select id="fCb"><option value="">全部状态</option>
+                <option value="已回调">已回调</option><option value="回调失败">回调失败</option>
+                <option value="未上报">未上报</option></select></div>
+            <div class="fi"><label>时间范围</label>
+              <div class="range"><input type="date" id="fStart"><span>—</span><input type="date" id="fEnd"></div></div>
+          </div>
+          <div class="acts">
+            <button class="btn ghost" id="btnReset">重置</button>
+            <button class="btn primary" id="btnQuery">查询</button>
+          </div>
+        </div>
+
+        <!-- 表格 -->
+        <div class="card" style="padding:0;overflow:hidden">
+          <div style="overflow-x:auto">
+            <table class="tbl">
+              <thead><tr>
+                <th style="width:170px">时间</th><th style="width:90px">平台</th>
+                <th style="width:130px">通道编码</th><th>收款账户</th>
+                <th style="width:100px">金额</th><th style="width:100px">订单状态</th>
+                <th style="width:100px">回调状态</th><th style="width:70px">操作</th>
+              </tr></thead>
+              <tbody id="logBody">
+                <tr><td colspan="8"><div class="empty">暂无记录</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 运行日志 -->
+      <div class="page" id="page-runlog">
+        <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:6px">
+          <h2 style="font-size:20px;font-weight:600">运行日志</h2>
+          <span style="flex:1"></span>
+          <button class="btn" id="btnClearLog" style="height:34px;background:#FFF0F0;color:#D92D20">清空日志</button>
+        </div>
+        <div style="font-size:13.5px;color:var(--sub);margin-bottom:14px">监控状态、程序回调、设置和系统异常分模块记录。</div>
+
+        <div class="card" style="padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:12px">
+            <select id="lgLevel" class="sel" style="width:150px">
+              <option value="">全部级别</option>
+              <option value="DEBUG">调试</option><option value="INFO">信息</option>
+              <option value="WARN">警告</option><option value="ERROR">错误</option>
+            </select>
+            <select id="lgModule" class="sel" style="width:180px">
+              <option value="">全部模块</option>
+              <option value="monitor">消息监听</option><option value="callback">上报回调</option>
+              <option value="inject">程序接入</option><option value="config">配置</option>
+              <option value="system">系统</option>
+            </select>
+            <span style="flex:1"></span>
+            <span style="font-size:13px;color:var(--sub)"><b id="lgTotal">0</b> 条日志</span>
+          </div>
+        </div>
+
+        <div class="card" style="padding:0;overflow:hidden">
+          <div id="lgList" style="max-height:calc(100vh - 320px);overflow-y:auto">
+            <div class="empty">暂无日志</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 配置 -->
+      <div class="page" id="page-settings">
+        <div class="card" style="display:flex;align-items:center;gap:16px;padding:14px 18px">
+          <span style="font-size:15px;font-weight:600;flex-shrink:0;white-space:nowrap">接口模式选择</span>
+          <select id="modeSelect" class="sel" style="flex:1;min-width:0">
+            <option value="none">请选择接口模式</option>
+            <option value="yjk">X-Ypay</option>
+            <option value="v1">码支付V1</option>
+          </select>
+        </div>
+
+        <div class="card" id="yjkBox">
+          <div class="head"><h2>X-Ypay 参数</h2></div>
+          <div class="field"><label>平台域名</label><input id="yjk_site" placeholder="https://pay.example.com"></div>
+          <div class="row">
+            <div class="field"><label>PID</label><input id="yjk_pid" placeholder="1000"></div>
+            <div class="field"><label>密钥 token</label><input id="yjk_token" placeholder="平台密钥"></div>
+          </div>
+        </div>
+
+        <div class="card" id="v1Box">
+          <div class="head"><h2>码支付 V1 参数</h2></div>
+          <div class="field"><label>平台域名</label><input id="v1_site" placeholder="https://pay.example.com"></div>
+          <div class="row">
+            <div class="field"><label>通道 ID</label><input id="v1_channel_id" placeholder="4"></div>
+            <div class="field"><label>商户密钥</label><input id="v1_secret" placeholder="密钥"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="head"><h2>转发规则</h2></div>
+          <div class="radio-row" id="filterRow">
+            <div class="radio" data-filter="all"><div class="t">全部转发</div><div class="d">所有消息都上报（默认）</div></div>
+            <div class="radio" data-filter="kw"><div class="t">按关键词</div><div class="d">只转发命中的消息</div></div>
+          </div>
+          <div class="field" style="margin-top:16px"><label>关键词（逗号分隔）</label>
+            <input id="keywords" placeholder="收款,到账,已收款">
+            <div class="hint">选「全部转发」时此项不生效</div></div>
+        </div>
+
+        <div class="card">
+          <div class="head"><h2>微信</h2></div>
+          <div class="field"><label>微信程序路径</label><input id="wechat_exe"></div>
+          <div class="hint">微信重启后会自动重新连接</div>
+        </div>
+
+        <div class="save-bar"><button class="btn-save" id="btnSave">保存设置</button></div>
+      </div>
+
+      <!-- 关于 -->
+      <div class="page" id="page-about">
+        <div style="display:flex;align-items:center;gap:14px;margin:6px 0 18px">
+          <div style="width:52px;height:52px;border-radius:13px;background:var(--green);color:#fff;
+            display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:600">易</div>
+          <div>
+            <div style="font-size:20px;font-weight:600">易监控PC版</div>
+            <div style="font-size:13px;color:var(--sub);margin-top:4px">微信收款消息监听</div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:0">
+          <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
+            <span style="width:110px;font-size:14px;color:var(--sub)">版本号</span>
+            <span style="font-size:14.5px">1.10</span>
+          </div>
+          <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
+            <span style="width:110px;font-size:14px;color:var(--sub)">作者</span>
+            <span style="font-size:14.5px">Coco</span>
+          </div>
+          <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
+            <span style="width:110px;font-size:14px;color:var(--sub)">微信版本</span>
+            <span style="font-size:14.5px" id="aboutWxVer">4.1.13.63</span>
+          </div>
+          <div style="padding:15px 18px;display:flex;align-items:flex-start">
+            <span style="width:110px;font-size:14px;color:var(--sub);flex-shrink:0">软件申明</span>
+            <span style="font-size:14.5px;line-height:1.6">
+              使用本软件，即代表你已同意使用规则，并独立承担法律责任。
+              <span class="lnk" id="btnTerms" style="margin-left:4px">查看详情</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- 运行环境 -->
+        <div style="display:flex;align-items:center;gap:12px;margin:22px 0 12px">
+          <div style="width:38px;height:38px;border-radius:9px;background:#FFF4E0;color:#B86E00;
+            display:flex;align-items:center;justify-content:center;font-size:18px">◫</div>
+          <div>
+            <div style="font-size:12.5px;color:var(--sub)">运行环境</div>
+            <div style="font-size:15.5px;font-weight:600;margin-top:2px">本机信息</div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:0;overflow:hidden">
+          <div style="display:grid;grid-template-columns:repeat(4,1fr)" id="envGrid">
+            <div class="env-cell"><div class="k">监控状态</div><div class="v" id="envMonitor">—</div></div>
+            <div class="env-cell"><div class="k">程序服务</div><div class="v" id="envProgram">—</div></div>
+            <div class="env-cell"><div class="k">通知服务</div><div class="v" id="envNotify">—</div></div>
+            <div class="env-cell"><div class="k">回调服务</div><div class="v" id="envCallback">—</div></div>
+            <div class="env-cell"><div class="k">系统负载</div><div class="v" id="envCPU">—</div></div>
+            <div class="env-cell"><div class="k">内存使用</div><div class="v" id="envMem">—</div></div>
+            <div class="env-cell"><div class="k">运行时长</div><div class="v mono" id="envUptime">—</div></div>
+            <div class="env-cell"><div class="k">消息缓冲</div><div class="v" id="envBuffer">—</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- 消息调试弹窗 -->
+<div id="dbgMask" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:100;
+  align-items:center;justify-content:center">
+  <div style="width:860px;max-width:92vw;height:600px;background:#fff;border-radius:12px;
+    display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:18px 22px 14px;border-bottom:1px solid var(--line)">
+      <div style="display:flex;align-items:center">
+        <div style="font-size:16px;font-weight:600">微信原始消息调试</div>
+        <span style="flex:1"></span>
+        <span id="dbgClose" style="cursor:pointer;color:var(--sub);font-size:18px">✕</span>
+      </div>
+      <div style="font-size:12.5px;color:var(--sub);margin-top:6px">
+        在金额识别之前捕获程序提交的完整 JSON，仅保存在内存中，最多 20 条。
+      </div>
+    </div>
+    <div style="padding:12px 22px;display:flex;align-items:center;gap:10px">
+      <span class="badge" id="dbgBadge"><span class="d"></span>捕获已停止</span>
+      <span style="font-size:13px" id="dbgCount">0 / 20 条</span>
+      <span style="flex:1"></span>
+      <span style="font-size:11.5px;color:var(--hint)">调试时可能包含账号和消息内容，复制后请妥善处理。</span>
+    </div>
+    <div style="flex:1;margin:0 22px;border:1px solid var(--line);border-radius:9px;overflow:auto;background:#FAFBFC">
+      <div id="dbgList" style="padding:8px"></div>
+    </div>
+    <div style="padding:14px 22px;display:flex;align-items:center;gap:10px;border-top:1px solid var(--line)">
+      <button class="btn ghost" id="dbgClear">清空</button>
+      <span style="flex:1"></span>
+      <button class="btn ghost" id="dbgCopyAll">复制全部</button>
+      <button class="btn ghost" id="dbgCopyCur">复制当前</button>
+      <button class="btn primary" id="dbgToggle">开始捕获</button>
+      <button class="btn ghost" id="dbgClose2">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 绑定通道 ID -->
+<div id="bdMask" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:170;
+  align-items:center;justify-content:center">
+  <div style="width:520px;max-width:94vw;background:#fff;border-radius:10px;overflow:hidden">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center">
+      <span style="font-size:16px;font-weight:600">绑定通道 ID</span>
+      <span style="flex:1"></span>
+      <span id="bdX" style="cursor:pointer;color:var(--sub);font-size:17px;line-height:1">✕</span>
+    </div>
+    <div style="padding:18px 20px">
+      <div style="font-size:13px;color:var(--sub);margin-bottom:14px" id="bdWxid">—</div>
+      <div class="field" style="margin:0"><label>通道 ID</label>
+        <input id="bdChannel" placeholder="例如 4"></div>
+    </div>
+    <div style="padding:0 20px 18px;display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn ghost" id="bdCancel">取消</button>
+      <button class="btn primary" id="bdSave" style="height:34px;padding:0 20px">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 软件申明 -->
+<div id="tmMask" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:180;
+  align-items:center;justify-content:center">
+  <div style="width:700px;max-width:94vw;max-height:86vh;background:#fff;border-radius:10px;
+    display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:18px 22px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center">
+      <span style="font-size:16.5px;font-weight:600">使用规则与免责申明</span>
+      <span style="flex:1"></span>
+      <span id="tmX" style="cursor:pointer;color:var(--sub);font-size:18px;line-height:1">✕</span>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:20px 24px;font-size:14.5px;line-height:1.85;color:var(--text)">
+      <p style="margin:0 0 14px">请只在你自己拥有或已获授权的设备与应用上使用，并遵守微信/支付宝等平台的规则以及当地法律法规。</p>
+      <p style="margin:0 0 14px">使用者须保证所绑定的收款码归属本人实际经营，严禁将收款码/商户号出租、出借或转码给他人。</p>
+      <p style="margin:0 0 14px">本系统仅作收款通知与数据记录，严禁资金在系统内沉淀、归集或二次清算，资金须直接进入收款人账户。</p>
+      <p style="margin:0 0 14px">不得将系统用于跑分、洗钱、赌博、诈骗等违法用途，亦不得在明知或应知他人从事违法活动时提供收款通道。</p>
+      <p style="margin:0">“不知情”不构成免责理由，因违规使用导致的账户冻结或法律责任，由使用者自行承担。</p>
+    </div>
+    <div style="padding:14px 24px;border-top:1px solid var(--line);display:flex;justify-content:flex-end">
+      <button class="btn primary" id="tmOk" style="height:36px;padding:0 26px">我已阅读并知晓</button>
+    </div>
+  </div>
+</div>
+
+<!-- 收款记录详情 -->
+<div id="dtMask" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:150;
+  align-items:center;justify-content:center">
+  <div style="width:780px;max-width:94vw;max-height:88vh;background:#fff;border-radius:10px;
+    display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:18px 22px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center">
+      <span style="font-size:16.5px;font-weight:600">收款记录详情</span>
+      <span style="flex:1"></span>
+      <span id="dtX" style="cursor:pointer;color:var(--sub);font-size:18px;line-height:1">✕</span>
+    </div>
+    <div style="padding:10px 22px 0;font-size:13px;color:var(--sub)" id="dtSub">—</div>
+    <div style="flex:1;overflow-y:auto;padding:14px 22px 22px">
+      <div class="dt-grid" id="dtGrid"></div>
+      <div class="dt-sec">原始内容</div>
+      <div class="dt-pre" id="dtRaw">—</div>
+      <div class="dt-sec">回调内容</div>
+      <div class="dt-pre" id="dtCb">—</div>
+    </div>
+  </div>
+</div>
+
+<!-- 关闭确认弹窗 -->
+<div id="closeMask" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200;
+  align-items:center;justify-content:center">
+  <div style="width:460px;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.18)">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center">
+      <span style="font-size:15.5px;font-weight:600">关闭程序</span>
+      <span style="flex:1"></span>
+      <span id="closeX" style="cursor:pointer;color:var(--sub);font-size:17px;line-height:1">✕</span>
+    </div>
+    <div style="padding:26px 20px;font-size:15px;color:var(--text)">是否要关闭程序?</div>
+    <div style="padding:0 20px 18px;display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn" id="closeYes" style="height:36px;background:#fff;border:1px solid var(--blue);color:var(--blue)">是，关闭程序</button>
+      <button class="btn primary" id="closeTray" style="height:36px">否，最小化到托盘</button>
+      <button class="btn ghost" id="closeCancel" style="height:36px;background:#F2F4F6">取消</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+let cfg={};
+function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');
+  clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('on'),1800);}
+function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function yuan(v){return '¥'+(v||0).toFixed(2);}
+function who(s){ if(!s) return '?'; if(s.endsWith('@chatroom')) return '群聊';
+  return s.length>20?s.slice(0,18)+'…':s; }
+function tm(ts){ if(!ts) return '';
+  const d=new Date(ts>1e12?ts:ts*1000); if(isNaN(d)) return '';
+  const p=n=>String(n).padStart(2,'0');
+  return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
+
+$$('.nav a').forEach(a=>a.onclick=()=>{
+  $$('.nav a').forEach(x=>x.classList.remove('on')); a.classList.add('on');
+  $$('.page').forEach(p=>p.classList.remove('on'));
+  $('#page-'+a.dataset.page).classList.add('on');
+  const names = {home:'总览',wx:'微信账号',logs:'收款记录',runlog:'运行日志',settings:'通知设置',about:'关于'};
+  $('#pageTitle').textContent = names[a.dataset.page] || '易监控';
+});
+$('#goLogs').onclick=()=>$$('.nav a')[1].click();
+
+$('#modeSelect').onchange = ()=>{
+  const m = $('#modeSelect').value;
+  $('#yjkBox').style.display = m==='yjk' ? '' : 'none';
+  $('#v1Box').style.display  = m==='v1'  ? '' : 'none';
+};
+
+function bindR(sel){ $$(sel+' .radio').forEach(r=>r.onclick=()=>{
+  $$(sel+' .radio').forEach(x=>x.classList.remove('on')); r.classList.add('on');
+});}
+bindR('#filterRow');
+
+function evItem(m){
+  const ok=m.reported, fail=!!m.err;
+  const tag = ok?'已接收':(fail?'失败':'未上报');
+  const cls = ok?'':(fail?' fail':' skip');
+  const amt = m.amount>0 ? ` · ${yuan(m.amount)}` : '';
+  return `<div class="ev">
+    <div class="ic">✆</div>
+    <div class="bd"><div class="txt">${esc(m.content)}</div>
+      <div class="meta">${esc(who(m.from))} · ${tm(m.time)}${amt}</div></div>
+    <div class="r"><span class="tag${cls}">${tag}</span></div>
+  </div>`;
+}
+
+async function refresh(){
+  try{
+    const s = await (await fetch('/api/status')).json();
+
+    $('#dot').className='dot '+(s.attached?'ok':'bad');
+    $('#status').textContent = s.attached?`已连接微信 · PID ${s.pid}`
+      :(s.wechat_running?'微信已启动，未连接':'等待微信启动');
+
+    $('#kToday').textContent = yuan(s.today_sum);
+    $('#kTodayCnt').textContent = s.today_count||0;
+    $('#kYday').textContent = yuan(s.yesterday_sum);
+    $('#kYdayCnt').textContent = s.yesterday_count||0;
+    $('#kWeek').textContent = yuan(s.week_sum);
+    $('#kWeekCnt').textContent = s.week_count||0;
+    $('#kRate').textContent = (s.reported||0)+(s.failed||0) > 0 ? (s.success_rate||0).toFixed(1)+'%' : '—';
+    $('#kAllCnt').textContent = (s.reported||0)+(s.failed||0);
+
+    // 账户状态
+    $('#aWxNum').textContent = s.attached?1:0;
+    $('#aWxOn').textContent = s.attached?1:0;
+    const wb=$('#aWxBadge');
+    wb.className='badge'+(s.attached?' on':''); wb.innerHTML=`<span class="d"></span>${s.attached?'运行中':'未运行'}`;
+
+    $('#aChNum').textContent = s.reported||0;
+    $('#aChOk').textContent = s.reported||0;
+    $('#aChFail').textContent = s.failed||0;
+    const cb=$('#aChBadge');
+    const chOn = s.mode!=='none';
+    cb.className='badge'+(chOn?' on':''); cb.innerHTML=`<span class="d"></span>${chOn?'已配置':'未配置'}`;
+
+    $('#aLsNum').textContent = s.parsed||0;
+    $('#aLsScan').textContent = s.scanned||0;
+    $('#aLsMsg').textContent = s.parsed||0;
+    const lb=$('#aLsBadge');
+    lb.className='badge'+(s.attached?' on':''); lb.innerHTML=`<span class="d"></span>${s.attached?'监听中':'未启动'}`;
+
+    const all = await (await fetch('/api/messages?limit=300')).json() || [];
+    // 总览实时事件：全部消息
+    $('#recent').innerHTML = all.length ? all.slice(0,6).map(evItem).join('') : '<div class="empty">暂无消息</div>';
+    // 收款记录页：只要带金额的收款通知
+    const recv = await (await fetch('/api/messages?limit=300&amount_only=1')).json() || [];
+    allMsgs = recv;
+    // 只在用户没设筛选时自动同步，避免把查询结果冲掉
+    const filtering = ['fPlatform','fAccount','fMin','fMax','fOrder','fCb','fStart','fEnd']
+      .some(id=>{ const el=$('#'+id); return el && el.value; });
+    if(!filtering){ shownMsgs = arr.slice(); renderTable(); }
+  }catch(e){}
+}
+
+async function loadConfig(){
+  cfg = await (await fetch('/api/config')).json();
+  $('#modeSelect').value = cfg.mode || 'none';
+  $('#yjkBox').style.display=cfg.mode==='yjk'?'':'none';
+  $('#v1Box').style.display=cfg.mode==='v1'?'':'none';
+  $$('#filterRow .radio').forEach(x=>x.classList.toggle('on',(cfg.forward_all?'all':'kw')===x.dataset.filter));
+  ['yjk_site','yjk_pid','yjk_token','v1_site','v1_channel_id','v1_secret','wechat_exe'].forEach(k=>{
+    const el=$('#'+k); if(el) el.value=cfg[k]||''; });
+  $('#keywords').value=(cfg.keywords||[]).join(',');
+}
+
+$('#btnSave').onclick=async()=>{
+  const mode=$('#modeSelect').value||'none';
+  const filter=($('#filterRow .radio.on')||{dataset:{}}).dataset.filter||'all';
+  const body={...cfg,mode,forward_all:filter==='all',
+    yjk_site:$('#yjk_site').value.trim(),yjk_pid:$('#yjk_pid').value.trim(),
+    yjk_token:$('#yjk_token').value.trim(),v1_site:$('#v1_site').value.trim(),
+    v1_channel_id:$('#v1_channel_id').value.trim(),v1_secret:$('#v1_secret').value.trim(),
+    wechat_exe:$('#wechat_exe').value.trim(),
+    keywords:$('#keywords').value.split(',').map(s=>s.trim()).filter(Boolean)};
+  const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.ok){cfg=body;toast('已保存');}else toast('保存失败');
+};
+$('#btnRefresh').onclick=()=>{refresh();toast('已刷新');};
+$('#btnReinject').onclick=async()=>{toast('正在重连…');await fetch('/api/reinject',{method:'POST'});setTimeout(refresh,900);};
+
+/* ---------- 消息调试 ---------- */
+let dbgOpen=false, dbgRun=false, dbgItems=[], dbgTimer=null;
+
+function dbgRender(){
+  const box=$('#dbgList');
+  if(!dbgItems.length){
+    box.innerHTML = `<div style="text-align:center;padding:120px 0;color:var(--hint);font-size:13px">
+      <div style="font-size:30px;margin-bottom:14px">▤</div>
+      点击“开始捕获”后发送或接收一条微信消息</div>`;
+    return;
+  }
+  box.innerHTML = dbgItems.map((d,i)=>{
+    const obj = {
+      seq:d.seq, from:d.from, to:d.to, content:d.content, display:d.display,
+      time:d.time, msgid:d.msgid, amount:d.amount, bytes:d.bytes,
+      raw_head:d.raw_head, at:d.at
+    };
+    return `<div class="dbg-it" data-i="${i}" style="padding:10px 12px;border-radius:7px;cursor:pointer;
+      ${i===0?'background:#fff;border:1px solid var(--line)':''}margin-bottom:6px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+        <span style="font-size:12px;color:var(--sub)">#${d.seq} · ${d.at}</span>
+        <span style="font-size:11px;color:var(--hint)">${d.bytes}B</span>
+        ${d.amount>0?`<span style="font-size:11px;color:var(--green)">¥${d.amount.toFixed(2)}</span>`:''}
+      </div>
+      <div style="font-size:13px;color:var(--text);word-break:break-all">${esc(d.content)}</div>
+      <div style="font-size:11.5px;color:var(--hint);margin-top:4px">${esc(d.from)} → ${esc(d.to)}</div>
+    </div>`;
+  }).join('');
+  box.querySelectorAll('.dbg-it').forEach(el=>{
+    el.onclick=()=>{
+      dbgItems.unshift(dbgItems.splice(+el.dataset.i,1)[0]);
+      dbgRender();
+    };
+  });
+}
+
+async function dbgPull(){
+  try{
+    const arr = await (await fetch('/api/debug')).json() || [];
+    dbgItems = arr;
+    $('#dbgCount').textContent = `${arr.length} / 20 条`;
+    dbgRender();
+  }catch(e){}
+}
+
+function dbgCurJSON(){
+  if(!dbgItems.length) return '';
+  const d = dbgItems[0];
+  return JSON.stringify({
+    seq:d.seq, from:d.from, to:d.to, content:d.content, display:d.display,
+    time:d.time, msgid:d.msgid, amount:d.amount, bytes:d.bytes,
+    raw_head:d.raw_head, at:d.at
+  }, null, 2);
+}
+
+function dbgOpenModal(){
+  $('#dbgMask').style.display='flex';
+  dbgOpen=true;
+  dbgPull();
+}
+
+$('#btnDebug').onclick = dbgOpenModal;
+$('#dbgClose').onclick = $('#dbgClose2').onclick = ()=>{ $('#dbgMask').style.display='none'; dbgOpen=false; };
+$('#dbgMask').onclick = (e)=>{ if(e.target.id==='dbgMask'){ $('#dbgMask').style.display='none'; dbgOpen=false; } };
+
+$('#dbgToggle').onclick = ()=>{
+  dbgRun = !dbgRun;
+  const b=$('#dbgToggle'), badge=$('#dbgBadge');
+  if(dbgRun){
+    b.textContent='停止捕获';
+    badge.className='badge on'; badge.innerHTML='<span class="d"></span>捕获中';
+    dbgTimer = setInterval(dbgPull, 800);
+    dbgPull();
+  }else{
+    b.textContent='开始捕获';
+    badge.className='badge'; badge.innerHTML='<span class="d"></span>捕获已停止';
+    if(dbgTimer){ clearInterval(dbgTimer); dbgTimer=null; }
+  }
+};
+
+$('#dbgClear').onclick = ()=>{ dbgItems=[]; $('#dbgCount').textContent='0 / 20 条'; dbgRender(); };
+
+function copyText(t){
+  if(!t){ toast('没有内容'); return; }
+  navigator.clipboard.writeText(t).then(()=>toast('已复制'),()=>{
+    const ta=document.createElement('textarea'); ta.value=t; document.body.appendChild(ta);
+    ta.select(); document.execCommand('copy'); ta.remove(); toast('已复制');
+  });
+}
+$('#dbgCopyAll').onclick = ()=>copyText(JSON.stringify(dbgItems,null,2));
+$('#dbgCopyCur').onclick = ()=>copyText(dbgCurJSON());
+
+/* ---------- 微信账号页 ---------- */
+const addWx = async ()=>{
+  toast('正在连接微信进程…');
+  await fetch('/api/reinject',{method:'POST'});
+  setTimeout(refresh, 1000);
+};
+$('#btnAddWx').onclick = addWx;
+if($('#btnAddWx2')) $('#btnAddWx2').onclick = addWx;
+if($('#btnAddWx3')) $('#btnAddWx3').onclick = addWx;
+
+async function refreshWx(){
+  try{
+    const s = await (await fetch('/api/status')).json();
+    $('#wxPath').textContent = 'D:\\Weixin\\Weixin.exe';
+    const b2=$('#wxBadge2');
+    b2.className='badge'+(s.wechat_running?' on':'');
+    b2.innerHTML=`<span class="d"></span>${s.wechat_running?`运行中 · PID ${s.pid}`:'未运行'}`;
+    const b3=$('#wxBadge3');
+    b3.className='badge'+(s.attached?' on':'');
+    b3.innerHTML=`<span class="d"></span>${s.attached?'已接入':'待接入'}`;
+    $('#wxVer').textContent = s.attached ? '4.1.13.63' : '—';
+    const m={none:'未选择',yjk:'X-Ypay',v1:'码支付V1'}[s.mode]||s.mode;
+    $('#chMode').textContent = m;
+    $('#lastBeat').textContent = s.attached ? new Date().toTimeString().slice(0,8) : '—';
+  }catch(e){}
+}
+
+/* ---------- 关闭确认 ---------- */
+window.__showCloseDialog = function(){
+  const m = $('#closeMask');
+  if(m) m.style.display = 'flex';
+};
+
+function closeDialog(v){ const m=$('#closeMask'); if(m) m.style.display='none'; }
+
+$('#closeX').onclick    = ()=>closeDialog();
+$('#closeCancel').onclick = ()=>{ closeDialog(); if(window.goCancelClose) window.goCancelClose(); };
+$('#closeYes').onclick  = ()=>{ closeDialog(); if(window.goQuit) window.goQuit(); };
+$('#closeTray').onclick = ()=>{ closeDialog(); if(window.goHideToTray) window.goHideToTray(); };
+$('#closeMask').onclick = (e)=>{ if(e.target.id==='closeMask') closeDialog(); };
+window.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDialog(); });
+
+/* ---------- 收款记录表格 ---------- */
+let allMsgs = [], shownMsgs = [];
+
+function fmtFull(ts){
+  if(!ts) return '—';
+  const d = new Date(ts>1e12?ts:ts*1000);
+  if(isNaN(d)) return '—';
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}/${p(d.getMonth()+1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function orderBadge(s){
+  if(s==='已收款') return '<span class="st ok">已收款</span>';
+  return '<span class="st skip">'+(s||'未识别')+'</span>';
+}
+function cbBadge(s){
+  if(s==='已回调') return '<span class="st ok">已回调</span>';
+  if(s==='回调失败') return '<span class="st fail">回调失败</span>';
+  return '<span class="st skip">'+(s||'未上报')+'</span>';
+}
+
+function renderTable(){
+  const tb = $('#logBody');
+  if(!shownMsgs.length){
+    tb.innerHTML = '<tr><td colspan="8"><div class="empty">暂无记录</div></td></tr>';
+  } else {
+    tb.innerHTML = shownMsgs.map((m,i)=>`<tr>
+      <td>${fmtFull(m.time)}</td>
+      <td>${esc(m.platform||'微信')}</td>
+      <td class="mono">${esc(m.channel_code||'jk_wechat_pc')}</td>
+      <td class="mono">${esc(m.to||'—')}</td>
+      <td style="font-weight:600">${(m.amount||0)>0?'¥'+m.amount.toFixed(2):'—'}</td>
+      <td>${orderBadge(m.order_status)}</td>
+      <td>${cbBadge(m.callback_status)}</td>
+      <td><span class="lnk" data-i="${i}">查看</span></td>
+    </tr>`).join('');
+    tb.querySelectorAll('.lnk').forEach(el=>el.onclick=()=>showDetail(shownMsgs[+el.dataset.i]));
+  }
+  $('#logTotal').textContent = shownMsgs.length;
+  $('#logCount') && ($('#logCount').textContent = `共 ${shownMsgs.length} 条`);
+}
+
+function applyFilter(){
+  const pf=$('#fPlatform').value, acc=$('#fAccount').value.trim().toLowerCase();
+  const mn=parseFloat($('#fMin').value), mx=parseFloat($('#fMax').value);
+  const os=$('#fOrder').value, cbs=$('#fCb').value;
+  const st=$('#fStart').value ? new Date($('#fStart').value+'T00:00:00').getTime() : 0;
+  const en=$('#fEnd').value ? new Date($('#fEnd').value+'T23:59:59').getTime() : 0;
+
+  shownMsgs = allMsgs.filter(m=>{
+    if(pf && (m.platform||'微信')!==pf) return false;
+    if(acc && !(m.to||'').toLowerCase().includes(acc)) return false;
+    const a=m.amount||0;
+    if(!isNaN(mn) && a<mn) return false;
+    if(!isNaN(mx) && a>mx) return false;
+    if(os && (m.order_status||'未识别')!==os) return false;
+    if(cbs && (m.callback_status||'未上报')!==cbs) return false;
+    const t = m.time>1e12?m.time:m.time*1000;
+    if(st && t<st) return false;
+    if(en && t>en) return false;
+    return true;
+  });
+  renderTable();
+}
+
+$('#btnQuery').onclick = applyFilter;
+$('#btnReset').onclick = ()=>{
+  ['fPlatform','fAccount','fMin','fMax','fOrder','fCb','fStart','fEnd'].forEach(id=>$('#'+id).value='');
+  shownMsgs = allMsgs.slice(); renderTable();
+};
+
+function showDetail(m){
+  $('#dtSub').textContent = fmtFull(m.time) + ' · ' + (m.platform||'微信');
+  $('#dtGrid').innerHTML = `
+    <div class="dt-cell"><div class="k">收款账户</div><div class="v mono">${esc(m.to||'—')}</div></div>
+    <div class="dt-cell"><div class="k">通道编码</div><div class="v mono">${esc(m.channel_code||'jk_wechat_pc')}</div></div>
+    <div class="dt-cell"><div class="k">金额</div><div class="v" style="color:#B86E00;font-weight:600">${(m.amount||0)>0?'¥'+m.amount.toFixed(2):'—'}</div></div>
+    <div class="dt-cell"><div class="k">订单状态</div><div class="v">${esc(m.order_status||'未识别')}</div></div>
+    <div class="dt-cell"><div class="k">回调状态</div><div class="v">${esc(m.callback_status||'未上报')}</div></div>
+    <div class="dt-cell"><div class="k">消息 ID</div><div class="v mono">${esc(m.rawid||'—')}</div></div>
+    <div class="dt-cell"><div class="k">发送方</div><div class="v mono">${esc(m.from||'—')}</div></div>
+    <div class="dt-cell"><div class="k">通道 ID</div><div class="v">${esc((cfg&&cfg.v1_channel_id)||'—')}</div></div>`;
+  $('#dtRaw').textContent = m.content || '—';
+  $('#dtCb').textContent = (m.callback_body || m.err || '—') + (m.callback_url ? '\n\n请求地址：'+m.callback_url : '');
+  $('#dtMask').style.display='flex';
+}
+$('#dtX').onclick = ()=>{ $('#dtMask').style.display='none'; };
+$('#dtMask').onclick = (e)=>{ if(e.target.id==='dtMask') $('#dtMask').style.display='none'; };
+
+/* ---------- 账号列表 ---------- */
+let accountsCache = [];
+let editingWxid = '';
+
+async function refreshAccounts(){
+  try{
+    const arr = await (await fetch('/api/accounts')).json() || [];
+    accountsCache = arr;
+    $('#accCount').textContent = arr.length + ' 个';
+    const box = $('#accList2');
+    if(!arr.length){
+      box.innerHTML = '<div class="empty">暂无账号，点击右上角添加</div>';
+      return;
+    }
+    const s = await (await fetch('/api/status')).json();
+    box.innerHTML = arr.map(a=>{
+      const live = s.attached;
+      return `<div style="display:flex;align-items:center;gap:14px;padding:15px 18px;border-bottom:1px solid var(--line)">
+        <div style="width:44px;height:44px;border-radius:11px;background:var(--green);color:#fff;
+          display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">✆</div>
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="font-size:15.5px;font-weight:600">${esc(a.nick || a.wxid)}${live?' · PID '+s.pid:''}</span>
+            <span class="badge${live?' on':''}"><span class="d"></span>${live?'监听中':'未连接'}</span>
+            ${a.channel_id?`<span class="badge on"><span class="d"></span>通道 ${esc(a.channel_id)}</span>`:'<span class="badge"><span class="d"></span>未绑定通道</span>'}
+          </div>
+          <div style="font-size:12.5px;color:var(--sub);margin-top:5px">
+            <span class="mono">${esc(a.wxid)}</span> · 64 位微信适配${a.note?' · '+esc(a.note):''}
+          </div>
+        </div>
+        <button class="btn ghost" data-bind="${esc(a.wxid)}" style="height:32px;font-size:13px">绑定通道ID</button>
+      </div>`;
+    }).join('');
+    box.querySelectorAll('[data-bind]').forEach(b=>b.onclick=()=>openBind(b.dataset.bind));
+  }catch(e){}
+}
+
+function openBind(wxid){
+  editingWxid = wxid;
+  const a = accountsCache.find(x=>x.wxid===wxid) || {wxid};
+  $('#bdWxid').textContent = (a.nick ? a.nick + ' · ' : '') + wxid;
+  $('#bdChannel').value = a.channel_id || '';
+  $('#bdMask').style.display = 'flex';
+  setTimeout(()=>$('#bdChannel').focus(), 80);
+}
+
+$('#bdX').onclick = $('#bdCancel').onclick = ()=>{ $('#bdMask').style.display='none'; };
+$('#bdMask').onclick = (e)=>{ if(e.target.id==='bdMask') $('#bdMask').style.display='none'; };
+$('#bdSave').onclick = async ()=>{
+  const old = accountsCache.find(x=>x.wxid===editingWxid) || {wxid:editingWxid};
+  const body = {
+    wxid: editingWxid,
+    nick: old.nick || '',
+    channel_id: $('#bdChannel').value.trim(),
+    merchant_id: old.merchant_id || '',
+    secret: old.secret || '',
+    note: old.note || '',
+    enabled: true
+  };
+  const r = await fetch('/api/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.ok){ $('#bdMask').style.display='none'; toast('通道已绑定'); refreshAccounts(); }
+  else toast('保存失败');
+};
+
+$('#bdChannel').addEventListener('keydown', e=>{ if(e.key==='Enter') $('#bdSave').click(); });
+
+/* ---------- 运行日志 ---------- */
+function lvlClass(l){ return l==='ERROR'?'fail':(l==='WARN'?'warn':(l==='DEBUG'?'skip':'ok')); }
+const LVL_COLOR = {ERROR:'#D92D20',WARN:'#B86E00',INFO:'#1256D0',DEBUG:'#6B7482'};
+const LVL_CN = {ERROR:'错误',WARN:'警告',INFO:'信息',DEBUG:'调试'};
+const MOD_CN = {monitor:'消息监听',callback:'上报回调',inject:'程序接入',config:'配置',system:'系统'};
+
+async function refreshLogs(){
+  const lv = $('#lgLevel').value, md = $('#lgModule').value;
+  let url = '/api/logs?limit=300';
+  if(lv) url += '&level='+encodeURIComponent(lv);
+  if(md) url += '&module='+encodeURIComponent(md);
+  try{
+    const arr = await (await fetch(url)).json() || [];
+    $('#lgTotal').textContent = arr.length;
+    const box = $('#lgList');
+    if(!arr.length){ box.innerHTML = '<div class="empty">暂无日志</div>'; return; }
+    box.innerHTML = arr.map(e=>`<div style="display:flex;gap:16px;padding:13px 18px;border-bottom:1px solid var(--line);align-items:flex-start">
+      <div style="width:150px;flex-shrink:0;font-size:12.5px;color:var(--hint);font-variant-numeric:tabular-nums">${esc(e.time)}</div>
+      <div style="width:56px;flex-shrink:0;font-size:12.5px;font-weight:600;color:${LVL_COLOR[e.level]||'#4E5765'}">${esc(LVL_CN[e.level]||e.level)}</div>
+      <div style="width:80px;flex-shrink:0;font-size:12.5px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(MOD_CN[e.module]||e.module)}</div>
+      <div style="flex:1;min-width:0;font-size:13px;line-height:1.6;word-break:break-all;white-space:pre-wrap">${esc(e.msg)}</div>
+    </div>`).join('');
+  }catch(e){}
+}
+
+$('#lgLevel').onchange = refreshLogs;
+$('#lgModule').onchange = refreshLogs;
+$('#btnClearLog').onclick = async ()=>{
+  await fetch('/api/logs/clear',{method:'POST'});
+  toast('日志已清空');
+  refreshLogs();
+};
+
+async function refreshEnv(){
+  try{
+    const [s, si] = await Promise.all([
+      fetch('/api/status').then(r=>r.json()),
+      fetch('/api/sysinfo').then(r=>r.json())
+    ]);
+    const set=(id,txt,cls)=>{ const el=$('#'+id); if(!el) return; el.textContent=txt;
+      el.className='v'+(cls?' '+cls:''); };
+
+    set('envMonitor', s.attached?'正常':'未连接', s.attached?'ok':'bad');
+    set('envProgram', s.wechat_running?'正常':'待启动', s.wechat_running?'ok':'warn');
+    set('envNotify',  s.attached?'正常':'未启动', s.attached?'ok':'warn');
+    set('envCallback', s.mode==='none'?'未配置':'正常', s.mode==='none'?'warn':'ok');
+    set('envCPU',     (si.cpu_pct||0).toFixed(0)+'%', (si.cpu_pct||0)>70?'bad':'');
+    set('envMem',     (si.mem_used_gb||0).toFixed(1)+' GB / '+(si.mem_total_gb||0).toFixed(1)+' GB',
+                      (si.mem_pct||0)>85?'bad':'');
+    set('envUptime',  si.uptime||'—');
+    set('envBuffer',  (s.parsed||0)+' 条', '');
+  }catch(e){}
+}
+
+$('#btnTerms').onclick = ()=>{ $('#tmMask').style.display='flex'; };
+$('#tmX').onclick = $('#tmOk').onclick = ()=>{ $('#tmMask').style.display='none'; };
+$('#tmMask').onclick = (e)=>{ if(e.target.id==='tmMask') $('#tmMask').style.display='none'; };
+
+loadConfig().then(refresh);
+setInterval(()=>{ refresh(); refreshWx(); refreshLogs(); refreshEnv(); refreshAccounts(); },1500);
+refreshWx(); refreshLogs(); refreshEnv(); refreshAccounts();
+</script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

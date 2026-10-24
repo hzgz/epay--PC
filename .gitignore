@@ -1,0 +1,16 @@
+# ????
+*.exe
+*.syso
+*.test
+
+# ?????
+run.log
+err.log
+webview-data/
+.edge-profile/
+config.json
+accounts.json
+
+# ????
+*.png
+!app.png
