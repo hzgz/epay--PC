@@ -67,7 +67,6 @@ Copy-Item "$dir\EasyMonitorPC.exe" "$stage\" -Force
 Copy-Item "$dir\integrity.dat" "$stage\" -Force
 Copy-Item "$dir\native\WCDB.dll" "$stage\native\" -Force
 Copy-Item "$dir\native\wxtool_wcdb.dll" "$stage\native\" -Force
-if (Test-Path "$dir\README.txt") { Copy-Item "$dir\README.txt" "$stage\" -Force }
 Compress-Archive -Path "$stage\*" -DestinationPath "$rel\EasyMonitorPC-v$Version-win64.zip" -Force
 Remove-Item $stage -Recurse -Force
 
