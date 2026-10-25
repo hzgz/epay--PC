@@ -3,6 +3,8 @@ package main
 // 运行日志：级别 + 模块 + 环形缓冲，供界面查询
 
 import (
+	"path/filepath"
+	"os"
 	"fmt"
 	"sync"
 	"time"
@@ -45,11 +47,16 @@ func logL(level, module, format string, args ...interface{}) {
 	}
 	logMu.Unlock()
 
-	// GUI 模式下没有控制台，Printf 会被系统忽略；加 recover 防止极端情况
-	func() {
-		defer func() { recover() }()
-		fmt.Printf("[%s] [%s] %s\n", ts.Format("15:04:05"), level, msg)
-	}()
+	// 写文件日志。不再往 stdout 打——GUI 程序一旦连到控制台，
+	// 会把整个黑窗口弹出来刷屏，很难看。
+	// 需要看实时输出时设环境变量 EASY_LOG_STDOUT=1。
+	if logToStdout {
+		func() {
+			defer func() { recover() }()
+			fmt.Printf("[%s] [%s] %s\n", ts.Format("15:04:05"), level, msg)
+		}()
+	}
+	writeLogFile(ts, level, module, msg)
 }
 
 func logInfo(module, format string, args ...interface{})  { logL("INFO", module, format, args...) }
@@ -83,3 +90,37 @@ func logsClear() {
 	logMu.Unlock()
 }
 
+// logToStdout 是否同时往控制台打。默认关闭，避免弹黑窗口。
+var logToStdout = os.Getenv("EASY_LOG_STDOUT") == "1"
+
+var (
+	logFileMu   sync.Mutex
+	logFile     *os.File
+	logFileOnce sync.Once
+)
+
+// writeLogFile 追加到程序目录下的 run.log
+func writeLogFile(ts time.Time, level, module, msg string) {
+	logFileOnce.Do(func() {
+		exe, err := os.Executable()
+		if err != nil {
+			return
+		}
+		p := filepath.Join(filepath.Dir(exe), "run.log")
+		// 超过 8MB 就重开一个，避免无限增长
+		if st, err := os.Stat(p); err == nil && st.Size() > 8<<20 {
+			os.Rename(p, p+".old")
+		}
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			logFile = f
+		}
+	})
+	logFileMu.Lock()
+	defer logFileMu.Unlock()
+	if logFile == nil {
+		return
+	}
+	fmt.Fprintf(logFile, "%s [%s] [%s] %s\n",
+		ts.Format("2006-01-02 15:04:05"), level, module, msg)
+}

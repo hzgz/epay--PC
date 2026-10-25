@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.19"
+	AppVersion = "1.20"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -335,6 +335,8 @@ func (e *Engine) run() {
 }
 
 func main() {
+	// 启动就把可能附带的控制台藏起来，避免黑窗口刷屏
+	hideConsoleWindow()
 	fmt.Printf("%s v%s\n", AppName, AppVersion)
 	fmt.Println("─────────────────────────────────────────")
 
@@ -461,6 +463,7 @@ func main() {
 	}
 	runWindow(port)
 }
+
 
 
 

@@ -168,6 +168,8 @@ func runWindow(port int) {
 
 	w.Navigate(url)
 	w.SetSize(1180, 772, webview2.HintNone)
+	// WebView2 起来后可能又带出控制台，再清一次
+	hideConsoleWindow()
 
 	// 窗口就绪后：设置图标、上托盘、子类化拦截 WM_CLOSE
 	go func() {

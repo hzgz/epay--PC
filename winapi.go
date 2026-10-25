@@ -25,6 +25,9 @@ var (
 	procCreateThread       = kernel32.NewProc("CreateThread")
 	procSleep              = kernel32.NewProc("Sleep")
 	procQueryFullProcessImageNameW = kernel32.NewProc("QueryFullProcessImageNameW")
+	procGetConsoleWindow      = kernel32.NewProc("GetConsoleWindow")
+	procGetConsoleProcessList = kernel32.NewProc("GetConsoleProcessList")
+	procFreeConsole           = kernel32.NewProc("FreeConsole")
 )
 
 const (
@@ -204,3 +207,26 @@ func wechatExeFromProcess() string {
 	return ""
 }
 
+// hideConsoleWindow 隐藏程序附带的控制台窗口。
+// GUI 子系统本来没有控制台，但从命令行/某些启动器拉起时
+// stdout 可能连到控制台，日志会刷屏。这里直接把它藏起来。
+// 只在控制台归本进程独占时隐藏，避免把用户自己的 cmd 窗口关掉。
+func hideConsoleWindow() {
+	// 1) 有可见控制台就藏起来
+	r, _, _ := procGetConsoleWindow.Call()
+	if r != 0 {
+		hwnd := r
+		// 控制台只属于本进程时才隐藏，避免影响用户自己的 cmd
+		pidBuf := make([]uint32, 4)
+		n, _, _ := procGetConsoleProcessList.Call(
+			uintptr(unsafe.Pointer(&pidBuf[0])),
+			uintptr(len(pidBuf)),
+		)
+		if n <= 1 {
+			procShowWindow.Call(hwnd, SW_HIDE)
+		}
+	}
+	// 2) 完全脱离控制台：这样 conhost.exe 会退出，
+	//    也不会因为后台 Printf 又冒出来
+	procFreeConsole.Call()
+}
