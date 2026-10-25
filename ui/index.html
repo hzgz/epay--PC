@@ -717,7 +717,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
       <div class="dt-grid" id="dtGrid"></div>
       <div class="dt-sec">原始内容</div>
       <div class="dt-pre" id="dtRaw">—</div>
-      <div class="dt-sec">回调内容</div>
+      <div class="dt-sec">上报结果（平台原话）</div>
       <div class="dt-pre" id="dtCb">—</div>
     </div>
   </div>
@@ -1864,9 +1864,10 @@ function showDetail(m){
     <div class="dt-cell"><div class="k">回调状态</div><div class="v">${esc(m.callback_status||'未上报')}</div></div>
     <div class="dt-cell"><div class="k">消息 ID</div><div class="v mono">${esc(m.rawid||'—')}</div></div>
     <div class="dt-cell"><div class="k">发送方</div><div class="v mono">${esc(m.from||'—')}</div></div>
-    <div class="dt-cell"><div class="k">通道 ID</div><div class="v">${esc(m.channel_code||'—')}</div></div>`;
+    <div class="dt-cell"><div class="k">上报地址</div><div class="v mono" style="word-break:break-all">${esc(m.callback_url||'—')}</div></div>`;
   $('#dtRaw').textContent = m.raw_content || m.content || '—';
-  $('#dtCb').textContent = m.callback_body || m.err || (m.callback_status === '未上报' ? '未上报，无回调内容' : '—');
+  $('#dtCb').textContent = m.callback_body || m.err ||
+    (m.callback_status === '未上报' ? '未向平台发送（未配置接口或仅记录模式）' : '平台没有返回内容');
   $('#dtMask').style.display='flex';
   // 诊断：弹框到底在哪、有没有尺寸
   try{

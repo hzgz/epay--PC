@@ -276,6 +276,20 @@ var (
 //
 // 之前只在 main 启动时判断一次 Mode，用户在设置里切到 X-Ypay 后
 // 心跳不会开始跑。现在保存配置时也调这个。
+// stopXPayHeartbeat 停掉心跳协程（切到不支持心跳的平台时调用）。
+// 码支付V1 没有心跳接口，切过去必须彻底停发，否则平台侧通道状态会一直"在线"。
+func stopXPayHeartbeat() {
+	xpayHbMu.Lock()
+	defer xpayHbMu.Unlock()
+	if !xpayHbStarted {
+		return
+	}
+	close(xpayHbStop)
+	xpayHbStop = make(chan struct{})
+	xpayHbStarted = false
+	logInfo("xpay", "心跳已停止（当前模式不支持心跳）")
+}
+
 func ensureXPayHeartbeat() {
 	xpayHbMu.Lock()
 	defer xpayHbMu.Unlock()
@@ -328,6 +342,12 @@ func xpayHeartbeatRound() {
 			continue
 		}
 		cid := strings.TrimSpace(a.ChannelID)
+		if cid == "" {
+			// 没绑通道就发心跳，等于给平台发一个空通道号：
+			// 轻则 400，重则可能被当成默认通道，把状态记到别人头上。
+			logWarn("xpay", "账号 %s 未绑定通道 ID，跳过心跳", short(a.Wxid))
+			continue
+		}
 		if err := xpayHeartbeat(c, name, cid); err != nil {
 			logWarn("xpay", "账号 %s 心跳失败（通道 %s）：%v", short(a.Wxid), cid, err)
 		} else {

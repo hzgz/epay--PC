@@ -402,6 +402,14 @@ func startServer() (int, error) {
 				return
 			}
 			logInfo("config", "配置已更新: mode=%s forward_all=%v", c.Mode, c.ForwardAll)
+			// 心跳必须跟随模式：
+			//   X-Ypay 有心跳接口 → 切过来立刻拉起并先发一轮；
+			//   码支付V1 没有心跳接口 → 切过去必须彻底停发。
+			if strings.TrimSpace(c.Mode) == "xpay" {
+				ensureXPayHeartbeat()
+			} else {
+				stopXPayHeartbeat()
+			}
 			w.Write([]byte(`{"ok":true}`))
 			return
 		}

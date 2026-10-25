@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -48,60 +49,48 @@ var mobileTitles = map[string]bool{
 
 // buildReport 返回 (from, content)。ok=false 表示这条消息没有平台能接受的格式。
 func buildReport(m *ChatMsg, channelID string) (from, content string, ok bool) {
+	// 微信：名单内公众号优先走 wxtool PC 合同（最贴近真实工具，XML 最完整）
+	if name, hit := pcAccounts[m.GHFrom]; hit && strings.HasPrefix(strings.TrimSpace(m.RawText), "<") {
+		_ = name
+		if f, c, ok := buildReportPC(m, channelID); ok {
+			return f, c, true
+		}
+	}
+	// 其它情况（非白名单公众号、支付宝、普通聊天）走手机合同
+	return buildReportPhone(m)
+}
+
+// buildReportPhone 手机合同：from 用包名，content 是 {"title","msg"}
+func buildReportPhone(m *ChatMsg) (from, content string, ok bool) {
 	title := strings.TrimSpace(m.Display)
 	if title == "" {
 		title = strings.TrimSpace(m.Content)
 	}
 
-	// 路径一：名单内的公众号 → PC 合同（完整 XML，字段最可信）
-	if name, hit := pcAccounts[m.GHFrom]; hit && strings.HasPrefix(strings.TrimSpace(m.RawText), "<") {
-		acc := m.GHFrom
-		_ = name
-		obj := map[string]any{
-			"event":   "wxtool.officialAccount.message",
-			"account": map[string]any{"username": acc},
-			"message": map[string]any{
-				"username":       acc,
-				"source":         "message",
-				"isFallback":     false,
-				"senderUsername": acc,
-				"direction":      "incoming",
-				"localType":      21474836529,
-				"createTime":     int64(m.Time),
-				"sortSeq":        m.SortSeq,
-				"localId":        m.LocalID,
-				"content":        m.RawText,
-			},
-			"delivery": map[string]any{
-				"id":         fmt.Sprintf("delivery_%d_%d", m.LocalID, m.Time),
-				"messageKey": fmt.Sprintf("%s:%s:%d:%d:%d", channelID, acc, m.SortSeq, m.Time, m.LocalID),
-			},
-		}
+	// 支付宝：MPAY「支付宝手机监听」合同
+	if strings.TrimSpace(m.From) == "支付宝" {
+		msg := fmt.Sprintf("支付宝收款到账%.2f元", m.Amount)
+		obj := map[string]string{"title": "收款通知", "msg": msg}
 		b, _ := json.Marshal(obj)
-		return acc, string(b), true
+		return "com.eg.android.AlipayGphone", string(b), true
 	}
 
-	// 路径二：名单外的公众号 → 手机合同兜底
-	// title 必须是平台认可的三个之一，否则发了也会被 unsupported_message 拒。
+	// 微信公众号：title 必须是平台认可的名字之一
 	if m.GHFrom != "" && m.Amount > 0 {
 		name := strings.TrimSpace(m.GHName)
 		if !mobileTitles[name] {
-			// 公众号显示名不在白名单里，用金额和正文拼一条能过正则的 msg
 			name = "微信收款商业版"
 		}
-		msg := title
-		if m.Amount > 0 {
-			msg = fmt.Sprintf("%s 收款到账¥%.2f", name, m.Amount)
+		msg := strings.TrimSpace(m.Content)
+		if msg == "" || !strings.Contains(msg, "元") {
+			msg = fmt.Sprintf("%s 收款到账%.2f元", name, m.Amount)
 		}
-		obj := map[string]string{
-			"title": name,
-			"msg":   msg,
-		}
+		obj := map[string]string{"title": name, "msg": msg}
 		b, _ := json.Marshal(obj)
 		return "com.tencent.mm", string(b), true
 	}
 
-	// 路径三：聊天消息（hook 路径），保留原格式
+	// 普通聊天消息
 	obj := map[string]string{
 		"title":        title,
 		"msg":          m.Content,
@@ -111,6 +100,67 @@ func buildReport(m *ChatMsg, channelID string) (from, content string, ok bool) {
 	}
 	b, _ := json.Marshal(obj)
 	return "com.tencent.mm", string(b), true
+}
+
+// buildReportPC 构造 wxtool 的 PC 事件对象（手机合同被拒时重试用）
+func buildReportPC(m *ChatMsg, channelID string) (from, content string, ok bool) {
+	if m.GHFrom == "" || !strings.HasPrefix(strings.TrimSpace(m.RawText), "<") {
+		return "", "", false
+	}
+	acc := m.GHFrom
+	obj := map[string]any{
+		"event":   "wxtool.officialAccount.message",
+		"account": map[string]any{"username": acc},
+		"message": map[string]any{
+			"username":       acc,
+			"source":         "message",
+			"isFallback":     false,
+			"senderUsername": acc,
+			"direction":      "incoming",
+			"localType":      21474836529,
+			"createTime":     int64(m.Time),
+			"sortSeq":        m.SortSeq,
+			"localId":        m.LocalID,
+			"content":        m.RawText,
+		},
+		"delivery": map[string]any{
+			"id":         fmt.Sprintf("delivery_%d_%d", m.LocalID, m.Time),
+			// MPAY 校验：第一段必须是用 ctype_digit 通过的数字（账号数字ID）。
+			// 微信内部数字账号拿不到，就用 wxid 的稳定哈希代替——
+			// 同一账号恒定、参与去重，符合"工具实际游标"的要求。
+			"messageKey": fmt.Sprintf("%s:%s:%d:%d:%d", accountNumericID(firstNonEmpty(m.To, channelID)), acc, m.SortSeq, m.Time, m.LocalID),
+		},
+	}
+	b, _ := json.Marshal(obj)
+	return acc, string(b), true
+}
+
+// accountNumericID 给 MPAY 的 messageKey 用的账号数字 ID。
+// 要求：纯数字、同一账号恒定（参与去重），不要求等于微信内部 ID。
+func accountNumericID(account string) string {
+	if account == "" {
+		return "1"
+	}
+	var h uint64 = 1469598103934665603
+	for i := 0; i < len(account); i++ {
+		h ^= uint64(account[i])
+		h *= 1099511628211
+	}
+	v := h % 1000000000
+	if v < 1 {
+		v = 1
+	}
+	return strconv.FormatUint(v, 10)
+}
+
+// firstNonEmpty 取第一个非空字符串
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // buildInner 兼容旧调用点
@@ -218,6 +268,11 @@ func sendV1(m *ChatMsg, c Config) ReportResult {
 		return ReportResult{Err: fmt.Sprintf("收款账号 %s 未绑定通道", short(m.To))}
 	}
 	sender, inner, _ := buildReport(m, channel)
+	return sendV1Payload(m, c, site, channel, sender, inner, true)
+}
+
+// sendV1Payload 用指定合同发一次通知
+func sendV1Payload(m *ChatMsg, c Config, site, channel, sender, inner string, allowPCFallback bool) ReportResult {
 	ts := fmt.Sprintf("%d", time.Now().UnixMilli())
 
 	mac := hmac.New(sha256.New, []byte(c.V1Secret))
@@ -250,8 +305,66 @@ func sendV1(m *ChatMsg, c Config) ReportResult {
 	rb, _ := io.ReadAll(resp.Body)
 	logDebug("callback", "V1 响应 <- %d  %s", resp.StatusCode, truncate(string(rb), 200))
 	txt := strings.TrimSpace(string(rb))
-	succ := resp.StatusCode >= 200 && resp.StatusCode < 300 && txt == "200"
-	return ReportResult{OK: succ, Code: resp.StatusCode, Body: txt, URL: u, Sent: body, Delivered: true}
+
+	// 码支付V1 的成功标志各家实现不一样：有的返回纯文本 200，
+	// 有的返回 {"code":200,...}，还有的返回 success/ok。
+	// 只认明确的成功标记，不会把真正的失败当成功。
+	succ := resp.StatusCode >= 200 && resp.StatusCode < 300 && v1LooksOK(txt)
+	if !succ {
+		// 平台业务拒绝时 HTTP 仍是 200，正文形如「400：来源消息认证失败」。
+		// 把正文带进记录，否则界面只剩一个 HTTP 200，看不出真实原因。
+		logWarn("callback", "V1 上报未成功：HTTP %d 响应=%s", resp.StatusCode, truncate(txt, 200))
+	}
+	// 手机合同被拒（通道只认 PC 合同）时，用 wxtool 事件对象再发一次
+	if allowPCFallback && !succ && strings.Contains(txt, "来源消息格式不符合合同") && m.GHFrom != "" {
+		if f2, inner2, ok2 := buildReportPhone(m); ok2 {
+			logInfo("callback", "V1 PC 合同被拒，改用手机合同重试（%s）", f2)
+			return sendV1Payload(m, c, site, channel, f2, inner2, false)
+		}
+	}
+
+	errTxt := ""
+	if !succ {
+		errTxt = fmt.Sprintf("HTTP %d %s", resp.StatusCode, truncate(txt, 160))
+	}
+	return ReportResult{OK: succ, Code: resp.StatusCode, Body: txt, URL: u, Sent: body,
+		Delivered: true, Err: errTxt}
+}
+
+// v1LooksOK 判断码支付V1 的响应是不是成功
+func v1LooksOK(body string) bool {
+	t := strings.TrimSpace(body)
+	if t == "200" {
+		return true
+	}
+	switch strings.ToLower(t) {
+	case "success", "ok", "true":
+		return true
+	}
+	// {"code":200,...} / {"code":"200"} / {"status":"success"}
+	if strings.HasPrefix(t, "{") {
+		var v struct {
+			Code   any    `json:"code"`
+			Status string `json:"status"`
+			Msg    string `json:"msg"`
+		}
+		if json.Unmarshal([]byte(t), &v) == nil {
+			switch c := v.Code.(type) {
+			case float64:
+				if int(c) == 200 {
+					return true
+				}
+			case string:
+				if c == "200" || strings.EqualFold(c, "success") {
+					return true
+				}
+			}
+			if strings.EqualFold(v.Status, "success") || strings.EqualFold(v.Status, "ok") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func Report(m *ChatMsg) ReportResult {

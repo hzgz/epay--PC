@@ -33,9 +33,7 @@ $c = Get-Content "$dir\main.go" -Raw -Encoding UTF8
 $c = [regex]::Replace($c, 'AppVersion\s*=\s*"[^"]+"', "AppVersion = `"$Version`"")
 [System.IO.File]::WriteAllText("$dir\main.go", $c, (New-Object System.Text.UTF8Encoding($false)))
 
-$h = Get-Content "$dir\ui\index.html" -Raw -Encoding UTF8
-$h = [regex]::Replace($h, '<div class="side-foot">v[^<]+</div>', "<div class=`"side-foot`">v$Version</div>")
-[System.IO.File]::WriteAllText("$dir\ui\index.html", $h, (New-Object System.Text.UTF8Encoding($false)))
+# 界面版本号由服务端用 __APP_VERSION__ 占位符替换，这里不再改 ui/index.html
 
 # 2) garble 混淆编译
 Write-Host "编译中（garble -literals -tiny）..." -ForegroundColor Yellow

@@ -1169,6 +1169,12 @@ func alipayPollOne(s AlipaySession) {
 		s.BillWatermark = wm
 	}
 
+	// 写前落盘：先把「这些交易号见过了 / 基线推进到哪」持久化，再去上报。
+	// 否则上报成功后进程崩溃或被杀，重启时这两项还停在旧值，
+	// 同一笔收款会被再报一次——平台可能把它匹配到另一张待付单，造成重复确认。
+	upsertAlipaySession(s)
+	saveAlipaySessionsThrottled(true)
+
 	// 老 → 新逐笔上报，收款记录按时间倒序展示时顺序才对
 	reported, failed := 0, 0
 	for i := len(picked) - 1; i >= 0; i-- {
@@ -1216,9 +1222,7 @@ func alipayPollOne(s AlipaySession) {
 			s.HeartbeatMsg += fmt.Sprintf("（%d 笔旧账单已忽略）", st.OlderThanWatermark+st.TooOld)
 		}
 	}
-	if mode := GetConfig().Mode; mode != "xpay" {
-		s.HeartbeatMsg += "（上报模式不是 X-Ypay，只记录不上报）"
-	}
+	// 上报按当前接口模式分发（xpay / v1 / yjk），这里不再区分平台
 	upsertAlipaySession(s)
 	saveAlipaySessionsThrottled(st.Picked > 0)
 }
@@ -1365,14 +1369,7 @@ func alipayReportBill(s AlipaySession, b AlipayBill) (ReportResult, *ChatMsg) {
 	if b.TradeNo != "" {
 		m.RawText = b.Memo + "\n交易号 " + b.TradeNo
 	}
-	// 只有 X-Ypay 有支付宝通道。其它模式下仍然记录这笔收款，
-	// 只是不发平台，并在记录里写明原因，避免"钱到了但系统没痕迹"。
-	if mode := GetConfig().Mode; mode != "xpay" {
-		return ReportResult{
-			OK: false, Delivered: false,
-			Err: "当前上报模式不是 X-Ypay，仅记录未上报",
-		}, m
-	}
+	// 和微信一样按当前接口模式分发（xpay / v1 / yjk），不做区别对待。
 	return Report(m), m
 }
 
