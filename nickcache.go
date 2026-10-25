@@ -30,21 +30,28 @@ func nickPath(wxid string) string {
 	return filepath.Join(filepath.Dir(configPath()), "nicks_"+wxid+".json")
 }
 
+// loadNicks 返回缓存的**副本**。
+// 直接返回引用的话，调用方在锁外改 map 会和别的 goroutine 撞车，
+// Go 里 concurrent map writes 是 fatal error，整个进程直接挂。
 func loadNicks(wxid string) map[string]string {
 	nickMu.Lock()
-	defer nickMu.Unlock()
-	if m, ok := nickCache[wxid]; ok {
-		return m
-	}
-	m := map[string]string{}
-	if b, err := os.ReadFile(nickPath(wxid)); err == nil {
-		var f nickFile
-		if json.Unmarshal(b, &f) == nil && f.Map != nil {
-			m = f.Map
+	m, ok := nickCache[wxid]
+	if !ok {
+		m = map[string]string{}
+		if b, err := os.ReadFile(nickPath(wxid)); err == nil {
+			var f nickFile
+			if json.Unmarshal(b, &f) == nil && f.Map != nil {
+				m = f.Map
+			}
 		}
+		nickCache[wxid] = m
 	}
-	nickCache[wxid] = m
-	return m
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	nickMu.Unlock()
+	return cp
 }
 
 func saveNicks(wxid string, m map[string]string) {
@@ -53,7 +60,7 @@ func saveNicks(wxid string, m map[string]string) {
 	nickCache[wxid] = m
 	f := nickFile{Wxid: wxid, Map: m}
 	if b, err := json.MarshalIndent(f, "", " "); err == nil {
-		os.WriteFile(nickPath(wxid), b, 0644)
+		atomicWriteFile(nickPath(wxid), b, 0644)
 	}
 }
 

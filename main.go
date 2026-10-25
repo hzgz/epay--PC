@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.21"
+	AppVersion = "1.22"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -337,6 +337,13 @@ func (e *Engine) run() {
 func main() {
 	// 启动就把可能附带的控制台藏起来，避免黑窗口刷屏
 	hideConsoleWindow()
+
+	// 只允许一个实例：否则两个进程会同时轮询同一份数据库，
+	// 同一笔收款被上报两次
+	if !ensureSingleInstance("EasyMonitorPC_SingleInstance_v1") {
+		logWarn("system", "程序已经在运行，本次启动退出")
+		return
+	}
 	fmt.Printf("%s v%s\n", AppName, AppVersion)
 	fmt.Println("─────────────────────────────────────────")
 
@@ -463,6 +470,7 @@ func main() {
 	}
 	runWindow(port)
 }
+
 
 
 

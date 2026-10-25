@@ -106,6 +106,7 @@ type LiveMonitor struct {
 	events []liveMsg
 	// 首次采样时只记游标，不推消息
 	primed bool
+	fails  int  // 连续失败轮数，用于限流告警
 	db     *WxDB
 	cdb    *WxDB // contact.db，用来查昵称
 	wxid   string
@@ -121,13 +122,15 @@ const liveKeep = 40
 
 // StartLiveMonitor 开始轮询某个账号的 message_0.db
 func StartLiveMonitor(wxid, dbPath, contactPath, keyHex string) error {
+	// 先从表里摘掉旧实例再停，否则两个 goroutine 同时启动会各建一份连接，
+	// 其中一份永远没人关。
 	liveMonMu.Lock()
-	if old := liveMons[wxid]; old != nil {
-		liveMonMu.Unlock()
-		old.Stop()
-		liveMonMu.Lock()
-	}
+	old := liveMons[wxid]
+	delete(liveMons, wxid)
 	liveMonMu.Unlock()
+	if old != nil {
+		old.Stop()
+	}
 
 	db, err := OpenWxDB(dbPath, keyHex)
 	if err != nil {
@@ -213,8 +216,23 @@ func (m *LiveMonitor) pollOnce() {
 	t0 := time.Now()
 	tables, err := m.db.Tables()
 	if err != nil {
+		m.mu.Lock()
+		m.fails++
+		n := m.fails
+		m.mu.Unlock()
+		// 前 3 次每次都记，之后每 20 次记一次，避免刷屏
+		if n <= 3 || n%20 == 0 {
+			logWarn("livemsg", "[%s] 读表失败（连续 %d 次）：%v", m.wxid, n, err)
+		}
 		return
 	}
+	// 成功一轮就把失败计数清零
+	m.mu.Lock()
+	if m.fails > 0 {
+		logInfo("livemsg", "[%s] 读表恢复正常（此前连续失败 %d 次）", m.wxid, m.fails)
+		m.fails = 0
+	}
+	m.mu.Unlock()
 	var fresh []liveMsg
 	primed := m.primed
 
@@ -223,7 +241,18 @@ func (m *LiveMonitor) pollOnce() {
 			continue
 		}
 		msgs, err := m.db.Messages(t, 5, 0, false) // 最新 5 条
-		if err != nil || len(msgs) == 0 {
+		if err != nil {
+			// 单表失败不打断整轮，但记下来（限流）
+			m.mu.Lock()
+			m.fails++
+			n := m.fails
+			m.mu.Unlock()
+			if n <= 3 || n%20 == 0 {
+				logWarn("livemsg", "[%s] 读表 %s 失败（连续 %d 次）：%v", m.wxid, t, n, err)
+			}
+			continue
+		}
+		if len(msgs) == 0 {
 			continue
 		}
 		// 表内按 local_id 正序处理

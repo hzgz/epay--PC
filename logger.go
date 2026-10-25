@@ -94,38 +94,69 @@ func logsClear() {
 var logToStdout = os.Getenv("EASY_LOG_STDOUT") == "1"
 
 var (
-	logFileMu   sync.Mutex
-	logFile     *os.File
-	logFileOnce sync.Once
+	logFileMu sync.Mutex
+	logFile   *os.File
+	logWrites int64
 )
 
 // writeLogFile 追加到程序目录下的 run.log
+const logRotateBytes = 8 << 20 // 8MB
+
+// logFilePath 返回 run.log 的完整路径
+func logFilePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(exe), "run.log")
+}
+
+// openLogFileLocked 打开（必要时先轮转）。调用方必须已持有 logFileMu。
+func openLogFileLocked() {
+	p := logFilePath()
+	if p == "" {
+		return
+	}
+	// 超过上限就先挪走旧文件
+	if st, err := os.Stat(p); err == nil && st.Size() > logRotateBytes {
+		if logFile != nil {
+			logFile.Close()
+			logFile = nil
+		}
+		os.Remove(p + ".old")
+		os.Rename(p, p+".old")
+	}
+	if logFile != nil {
+		return
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		logFile = f
+	}
+}
+
 func writeLogFile(ts time.Time, level, module, msg string) {
-	logFileOnce.Do(func() {
-		exe, err := os.Executable()
-		if err != nil {
-			return
-		}
-		p := filepath.Join(filepath.Dir(exe), "run.log")
-		// 超过 8MB 就重开一个，避免无限增长
-		if st, err := os.Stat(p); err == nil && st.Size() > 8<<20 {
-			os.Rename(p, p+".old")
-		}
-		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err == nil {
-			logFile = f
-		}
-	})
 	if !logFileEnabled(level) {
 		return
 	}
 	logFileMu.Lock()
 	defer logFileMu.Unlock()
+
+	openLogFileLocked()
 	if logFile == nil {
 		return
 	}
 	fmt.Fprintf(logFile, "%s [%s] [%s] %s\n",
 		ts.Format("2006-01-02 15:04:05"), level, module, msg)
+
+	// 每 200 条查一次大小。之前只在启动时检查，
+	// 程序跑一个月不重启日志会涨到几个 GB。
+	logWrites++
+	if logWrites%200 == 0 {
+		if st, err := logFile.Stat(); err == nil && st.Size() > logRotateBytes {
+			openLogFileLocked()
+		}
+	}
 }
 
 // logFileEnabled 按配置的日志级别决定这条要不要落盘。

@@ -44,11 +44,17 @@ func tmapPath(wxid string) string {
 	return filepath.Join(filepath.Dir(configPath()), "tablemap_"+wxid+".json")
 }
 
+// loadTableMap 返回副本，理由同 loadNicks：
+// 调用方在锁外改 map 会和别的 goroutine 撞车，导致 fatal error。
 func loadTableMap(wxid string) map[string]string {
 	tmapMu.Lock()
-	defer tmapMu.Unlock()
 	if m, ok := tmapCache[wxid]; ok {
-		return m
+		cp := make(map[string]string, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		tmapMu.Unlock()
+		return cp
 	}
 	m := map[string]string{}
 	if b, err := os.ReadFile(tmapPath(wxid)); err == nil {
@@ -58,7 +64,12 @@ func loadTableMap(wxid string) map[string]string {
 		}
 	}
 	tmapCache[wxid] = m
-	return m
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	tmapMu.Unlock()
+	return cp
 }
 
 func saveTableMap(wxid string, m map[string]string) {
@@ -67,7 +78,7 @@ func saveTableMap(wxid string, m map[string]string) {
 	tmapCache[wxid] = m
 	f := tableMapFile{Wxid: wxid, Map: m}
 	if b, err := json.MarshalIndent(f, "", " "); err == nil {
-		os.WriteFile(tmapPath(wxid), b, 0644)
+		atomicWriteFile(tmapPath(wxid), b, 0644)
 	}
 }
 

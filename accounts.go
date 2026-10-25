@@ -59,7 +59,7 @@ func saveAccounts() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(accountsFile(), b, 0644)
+	return atomicWriteFile(accountsFile(), b, 0644)
 }
 
 func accountsCopy() []Account {

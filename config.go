@@ -159,7 +159,7 @@ func SaveConfig() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath(), b, 0644)
+	return atomicWriteFile(configPath(), b, 0644)
 }
 
 func GetConfig() Config {

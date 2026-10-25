@@ -59,7 +59,7 @@ func saveRecords(items []MsgView) {
 		return
 	}
 	tmp := recordsPath() + ".tmp"
-	if os.WriteFile(tmp, b, 0644) != nil {
+	if atomicWriteFile(tmp, b, 0644) != nil {
 		return
 	}
 	os.Rename(tmp, recordsPath())

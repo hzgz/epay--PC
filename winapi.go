@@ -29,6 +29,7 @@ var (
 	procGetConsoleWindow      = kernel32.NewProc("GetConsoleWindow")
 	procGetConsoleProcessList = kernel32.NewProc("GetConsoleProcessList")
 	procFreeConsole           = kernel32.NewProc("FreeConsole")
+	procCreateMutexW          = kernel32.NewProc("CreateMutexW")
 )
 
 const (
@@ -247,4 +248,27 @@ func openExplorer(dir string) {
 		uintptr(unsafe.Pointer(verb)),
 		uintptr(unsafe.Pointer(path)),
 		0, 0, SW_SHOWNORMAL)
+}
+
+// ensureSingleInstance 保证同时只有一个实例在跑。
+// 没有这个保护的话，双击两次会起两个进程：
+// 两个都在轮询同一个数据库、都在往平台上报，同一笔收款会重复入账。
+// 返回 true 表示本进程是唯一实例。
+func ensureSingleInstance(name string) bool {
+	np, err := syscall.UTF16PtrFromString(name)
+	if err != nil {
+		return true
+	}
+	h, _, e := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(np)))
+	if h == 0 {
+		logWarn("system", "创建互斥体失败: %v", e)
+		return true // 创建不了就别拦着用户
+	}
+	// ERROR_ALREADY_EXISTS = 183
+	if errno, ok := e.(syscall.Errno); ok && errno == 183 {
+		procCloseHandle.Call(h)
+		return false
+	}
+	// 句柄故意不关：进程退出时系统自动释放
+	return true
 }
