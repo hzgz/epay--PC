@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.24"
+	AppVersion = "1.36"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -380,7 +380,7 @@ func main() {
 			logWarn("config", "未找到微信安装路径，可在设置中手动指定")
 		}
 	}
-	mode := map[string]string{"yjk": "易简控", "v1": "码支付V1", "none": "仅打印"}[c.Mode]
+	mode := map[string]string{"yjk": "易简控", "v1": "码支付V1", "xpay": "X-Ypay", "none": "仅打印"}[c.Mode]
 	filterMode := "全量转发"
 	if !c.ForwardAll {
 		filterMode = "关键词: " + fmt.Sprint(c.Keywords)
@@ -436,6 +436,15 @@ func main() {
 	}
 
 	go eng.run()
+
+	// 支付宝：加载登录态（心跳要用它判断通道是否在线，必须先加载）
+	loadAlipaySessions()
+
+	// X-Ypay 心跳：60 秒一次，每账号。配置里切到 X-Ypay 后也会自动启动
+	ensureXPayHeartbeat()
+
+	// 支付宝轮询
+	startAlipayMonitor()
 
 	// 启动界面
 	port, err := startServer()

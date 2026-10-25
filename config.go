@@ -30,6 +30,13 @@ type Config struct {
 	V1ChannelID string `json:"v1_channel_id"`
 	V1Secret    string `json:"v1_secret"`
 
+	// X-Ypay（XArrPay 商户版）
+	XPaySite      string `json:"xpay_site"`       // 平台地址，例如 https://epay.973700.xyz
+	XPayPID       string `json:"xpay_pid"`        // 商户 ID（路径里的 {pid}）
+	XPaySecret    string `json:"xpay_secret"`     // 商户密钥，MD5 签名用
+	XPayClient    string `json:"xpay_client"`     // 心跳 client_name，默认 易监控PC
+	XPayHeartbeat bool   `json:"xpay_heartbeat"`  // 是否发心跳
+
 	// 过滤
 	ForwardAll  bool     `json:"forward_all"`
 	Keywords    []string `json:"keywords"`
@@ -88,6 +95,9 @@ var (
 		AutoInject: false,
 		WeChatExe:  "",
 		LogLevel:   "",
+		XPaySite:   "https://epay.973700.xyz",
+		XPayClient: "易监控PC",
+		XPayHeartbeat: true,
 	}
 )
 
@@ -207,6 +217,7 @@ func mustDecrypt(v string) string {
 
 func encryptConfig(c *Config) {
 	c.V1Secret = mustEncrypt(c.V1Secret)
+	c.XPaySecret = mustEncrypt(c.XPaySecret)
 	c.YjkToken = mustEncrypt(c.YjkToken)
 	c.DbKey = mustEncrypt(c.DbKey)
 	for i := range c.DbAccounts {
@@ -216,6 +227,7 @@ func encryptConfig(c *Config) {
 
 func decryptConfig(c *Config) {
 	c.V1Secret = mustDecrypt(c.V1Secret)
+	c.XPaySecret = mustDecrypt(c.XPaySecret)
 	c.YjkToken = mustDecrypt(c.YjkToken)
 	c.DbKey = mustDecrypt(c.DbKey)
 	migrated := false

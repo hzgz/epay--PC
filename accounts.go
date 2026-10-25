@@ -3,6 +3,7 @@ package main
 // 账号通道绑定：每个微信账号（wxid）可以单独配置通道值
 
 import (
+	"strings"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,9 +11,14 @@ import (
 )
 
 type Account struct {
-	Wxid       string `json:"wxid"`        // 微信账号（wxid_xxx）
+	// Type 账号类型：wechat / alipay。留空时按 Wxid 前缀推断。
+	//   wxid_*  → wechat
+	//   2088*   → alipay
+	Type       string `json:"type"`
+	Wxid       string `json:"wxid"`        // 微信 wxid_xxx / 支付宝 PID 2088...
 	Nick       string `json:"nick"`        // 备注名，可手动填
-	ChannelID  string `json:"channel_id"`  // 通道 ID（码支付 V1 用）
+	ChannelID  string `json:"channel_id"`  // 通道 ID（码支付 V1 用；X-Ypay 时是 channel_account_id）
+	ChannelCode string `json:"channel_code"` // X-Ypay 通道代码：jk_wechat_pc / jk_wechat_app / alipay_app / jk_alipay
 	Secret     string `json:"secret"`      // 商户密钥 / token（可选，空则用全局）
 	MerchantID string `json:"merchant_id"` // 商户号 / PID（可选）
 	Enabled    bool   `json:"enabled"`     // 是否启用该账号的上报
@@ -71,6 +77,40 @@ func accountsCopy() []Account {
 }
 
 // findAccount 按 wxid 查账号配置
+// inferChannelCode 按账号类型决定通道编码，不需要用户选。
+//   微信（wxid_ 开头）  → jk_wechat_pc
+//   其它（2088... 支付宝） → alipay_app
+// accountType 判断账号类型。
+// 显式写了 Type 就用它，否则按 ID 前缀推断。
+func accountType(id string) string {
+	id = strings.TrimSpace(id)
+	if strings.HasPrefix(strings.ToLower(id), "wxid_") {
+		return "wechat"
+	}
+	if strings.HasPrefix(id, "2088") {
+		return "alipay"
+	}
+	return "wechat"
+}
+
+// accountKind 取账号的实际类型（优先用字段）
+func accountKind(a Account) string {
+	if t := strings.TrimSpace(a.Type); t == "alipay" || t == "wechat" {
+		return t
+	}
+	return accountType(a.Wxid)
+}
+
+// inferChannelCode 通道编码由账号类型决定，不让用户选。
+//   微信   → jk_wechat_pc
+//   支付宝 → alipay_app
+func inferChannelCode(id string) string {
+	if accountType(id) == "alipay" {
+		return "alipay_app"
+	}
+	return "jk_wechat_pc"
+}
+
 func findAccount(wxid string) (Account, bool) {
 	accMu.Lock()
 	defer accMu.Unlock()

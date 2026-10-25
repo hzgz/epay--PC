@@ -261,6 +261,8 @@ func Report(m *ChatMsg) ReportResult {
 		return sendYjk(m, c)
 	case "v1":
 		return sendV1(m, c)
+	case "xpay":
+		return sendXPay(m, c)
 	default:
 		// 未配置接口：只记录，不发请求
 		return ReportResult{OK: true, Body: "(仅打印，未上报)", Delivered: false}

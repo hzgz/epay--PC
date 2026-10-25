@@ -3,6 +3,7 @@ package main
 // 内嵌 HTTP 服务：提供 UI 与配置/状态 API
 
 import (
+	"bytes"
 	"path/filepath"
 	"os"
 	"regexp"
@@ -46,6 +47,10 @@ type StatusResp struct {
 
 	// 多账号监控状态
 	WxAccounts []WxMonitorStatus `json:"wx_accounts"`
+
+	// 支付宝账号（总览页「账户状态总览」那张卡用）
+	AliAccounts int `json:"ali_accounts"`
+	AliOnline   int `json:"ali_online"`
 }
 
 type PointStat struct {
@@ -78,6 +83,9 @@ type MsgView struct {
 }
 
 func (e *Engine) snapshot() StatusResp {
+	// 支付宝统计要在拿 e.mu 之前取，避免和 alipayPollOne 的锁顺序交叉
+	aliTotal, aliOnline := alipayAccountStats()
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c := GetConfig()
@@ -160,6 +168,8 @@ func (e *Engine) snapshot() StatusResp {
 		SuccessRate:   rate,
 		Points:        e.pointStatsLocked(),
 		WxAccounts:    dbAll,
+		AliAccounts:   aliTotal,
+		AliOnline:     aliOnline,
 	}
 }
 
@@ -261,8 +271,21 @@ func (e *Engine) addDebug(m *ChatMsg, rawLen int) {
 	}
 }
 
-// addHistory 记录一条消息。res 为 nil 表示未上报。
+// addHistory 记录一条微信消息。res 为 nil 表示未上报。
 func (e *Engine) addHistory(m *ChatMsg, reported bool, errMsg string, res *ReportResult) {
+	e.addHistoryEx(m, reported, errMsg, res, "微信", "jk_wechat_pc")
+}
+
+// addHistoryEx 记录一条收款记录，平台与通道编码由调用方指定。
+// 微信走 addHistory（固定 微信 / jk_wechat_pc），支付宝走这里传 支付宝 / alipay_app。
+func (e *Engine) addHistoryEx(m *ChatMsg, reported bool, errMsg string, res *ReportResult, platform, channelCode string) {
+	if platform == "" {
+		platform = "微信"
+	}
+	if channelCode == "" {
+		channelCode = "jk_wechat_pc"
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -295,7 +318,7 @@ func (e *Engine) addHistory(m *ChatMsg, reported bool, errMsg string, res *Repor
 		From: m.From, To: m.To, Content: m.Content, RawText: m.RawText, Display: m.Display,
 		Time: m.Time, RawID: fmt.Sprintf("%d", m.MsgID), Amount: m.Amount,
 		Reported: reported, Err: errMsg,
-		Platform: "微信", ChannelCode: "jk_wechat_pc", OrderStatus: orderStatus,
+		Platform: platform, ChannelCode: channelCode, OrderStatus: orderStatus,
 		CallbackStatus: cbStatus, CallbackBody: cbBody, CallbackURL: cbURL,
 	}
 	e.history = append([]MsgView{v}, e.history...)
@@ -335,7 +358,9 @@ func startServer() (int, error) {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Write(uiHTML)
+		// 版本号只有 main.go 里一份真相，界面用占位符替换，
+		// 避免标题栏和「关于」页各写一个数字然后对不上。
+		w.Write(bytes.ReplaceAll(uiHTML, []byte("__APP_VERSION__"), []byte(AppVersion)))
 	})
 
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
@@ -380,10 +405,456 @@ func startServer() (int, error) {
 			w.Write([]byte(`{"ok":true}`))
 			return
 		}
+		ensureXPayHeartbeat() // 切到 X-Ypay 后让心跳立刻开始跑
 		json.NewEncoder(w).Encode(GetConfig())
 	})
 
 	// 账号列表
+	// ---------- 支付宝账号 ----------
+	mux.HandleFunc("/api/alipay", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case "GET":
+			json.NewEncoder(w).Encode(alipayViews())
+		case "DELETE":
+			id := r.URL.Query().Get("id")
+			if id == "" {
+				http.Error(w, "id required", 400)
+				return
+			}
+			s, ok := findAlipaySession(id)
+			removeAlipaySession(id)
+			if ok && s.PID != "" {
+				removeAccount(s.PID)
+			}
+			saveAlipaySessions()
+			w.Write([]byte(`{"ok":true}`))
+		default:
+			http.Error(w, "method not allowed", 405)
+		}
+	})
+
+	// 新建一个待扫码会话
+	mux.HandleFunc("/api/alipay/new", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		s := AlipaySession{
+			ID:        newAlipaySessionID(),
+			Status:    "waiting",
+			CreatedAt: time.Now().Format("2006-01-02T15:04:05Z07:00"),
+			LoginURL:  alipayLoginURL(),
+		}
+		upsertAlipaySession(s)
+		saveAlipaySessions()
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "id": s.ID, "login_url": s.LoginURL,
+		})
+	})
+
+	// 生成登录二维码（软件内显示，不开浏览器）
+	mux.HandleFunc("/api/alipay/qr/start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			ID string `json:"id"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		var sess AlipaySession
+		ok := false
+		if req.ID != "" {
+			sess, ok = findAlipaySession(req.ID)
+		}
+		if !ok {
+			sess = AlipaySession{
+				ID:        newAlipaySessionID(),
+				Status:    "waiting",
+				CreatedAt: time.Now().Format("2006-01-02T15:04:05Z07:00"),
+			}
+			upsertAlipaySession(sess)
+			saveAlipaySessions()
+		}
+
+		qr, err := alipayNewQR(sess.ID)
+		if err != nil {
+			logWarn("alipay", "生成二维码失败：%v", err)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		logInfo("alipay", "已生成登录二维码，等待扫码")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "id": sess.ID, "qr_url": qr.QRURL,
+		})
+	})
+
+	// 账单安全校验：二维码图片
+	mux.HandleFunc("/api/alipay/security/qr", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		chk := getPendingCheck(id)
+		if chk == nil {
+			http.Error(w, "no pending check", 404)
+			return
+		}
+		png, err := qrImagePNG(chk.QRURL, 240)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write(png)
+	})
+
+	// 账单安全校验：扫码后提交
+	mux.HandleFunc("/api/alipay/security/verify", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		id := r.URL.Query().Get("id")
+		chk := getPendingCheck(id)
+		if chk == nil {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "没有待验证的请求"})
+			return
+		}
+		s, ok := findAlipaySession(id)
+		if !ok {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "会话不存在"})
+			return
+		}
+		// 先查扫码状态
+		st, msg, err := alipayPollSecurityStatus(chk)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		if st != "confirmed" {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "state": st, "err": msg})
+			return
+		}
+		if err := alipaySubmitSecurityCheck(&s, chk); err != nil {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		setPendingCheck(id, nil)
+		s.HeartbeatMsg = "安全校验已通过"
+		upsertAlipaySession(s)
+		saveAlipaySessions()
+		go alipayPollOne(s)
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+
+	// 用已有 Cookie 重新获取 PID（登录成功但当时没取到时用）
+	mux.HandleFunc("/api/alipay/refresh-pid", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		id := r.URL.Query().Get("id")
+		pid, err := alipayRefreshPID(id)
+		if err != nil {
+			logWarn("alipay", "重新获取 PID 失败：%v", err)
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "pid": pid})
+	})
+
+	// 二维码图片
+	mux.HandleFunc("/api/alipay/qr/image", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		png, err := alipayQRPNG(id, 240)
+		if err != nil {
+			http.Error(w, err.Error(), 404)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write(png)
+	})
+
+	// 扫码状态
+	mux.HandleFunc("/api/alipay/qr/state", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id := r.URL.Query().Get("id")
+		st := getQRState(id)
+		s, _ := findAlipaySession(id)
+		// 浏览器登录时没有二维码状态，message 用会话心跳兜底，
+		// 界面才能显示「登录窗口已关闭 / 扫码超时」这类提示
+		msg := st.Message
+		if msg == "" {
+			msg = s.HeartbeatMsg
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"qr_status": st.Status, "message": msg,
+			"session_status": s.Status, "pid": s.PID,
+			// 界面上的 UID：没拿到真实 PID 时用会话 ID，和参考程序一致
+			"session_uid": s.ID,
+		})
+	})
+
+	// 打开浏览器扫码登录。立即返回，登录在后台跑。
+	//
+	// 和参考程序（Wails + WebView2）保持一致：登录在真浏览器里完成，
+	// 一次扫码就把整份 cookie（alipay.com / auth / authsa / authea / my / securitycore）
+	// 拿下来，再用收款接口验证一次。自造的 HTTP 表单登录拿不到这么全的 cookie。
+	mux.HandleFunc("/api/alipay/login/start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			ID string `json:"id"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		// 先确认本机有可用浏览器，否则让界面退回内置二维码
+		if findBrowser() == "" {
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok": false, "err": "没找到 Edge 或 Chrome，无法用浏览器登录",
+			})
+			return
+		}
+
+		var sess AlipaySession
+		ok := false
+		if req.ID != "" {
+			sess, ok = findAlipaySession(req.ID)
+		}
+		if !ok {
+			sess = AlipaySession{
+				ID:        newAlipaySessionID(),
+				Status:    "waiting",
+				CreatedAt: time.Now().Format("2006-01-02T15:04:05Z07:00"),
+				LoginURL:  alipayLoginURL(),
+			}
+			upsertAlipaySession(sess)
+			saveAlipaySessions()
+		} else {
+			sess.Status = "waiting"
+			sess.HeartbeatMsg = "等待扫码…"
+			upsertAlipaySession(sess)
+			saveAlipaySessions()
+		}
+
+		sid := sess.ID
+		loginURL := sess.LoginURL
+		if loginURL == "" {
+			loginURL = alipayLoginURL()
+		}
+
+		// 首选：无头浏览器出二维码，画在软件里（和参考程序一样不弹窗口），
+		// cookie 仍然是真浏览器产出的整份。
+		if q, err := alipayStartBrowserQR(sess); err == nil {
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok": true, "id": sid, "mode": "qr", "qr_url": q.QRURL,
+			})
+			return
+		} else {
+			logWarn("alipay", "无头浏览器扫码不可用，改用可见浏览器窗口：%v", err)
+		}
+
+		go func() {
+			logInfo("alipay", "已打开登录窗口，等待扫码（最长 5 分钟）")
+			cookies, ua, err := browserLogin(loginURL, 5*time.Minute)
+
+			s, found := findAlipaySession(sid)
+			if !found {
+				return
+			}
+			if err != nil {
+				s.Status = "waiting"
+				s.HeartbeatMsg = err.Error()
+				upsertAlipaySession(s)
+				saveAlipaySessions()
+				logWarn("alipay", "登录未完成：%v", err)
+				return
+			}
+
+			s.Cookies = cookies
+			s.UA = ua
+			s.Status = "confirmed"
+			s.OnlineSince = time.Now().Format("2006-01-02T15:04:05Z07:00")
+			s.LastCheck = s.OnlineSince
+			s.HeartbeatMsg = "登录成功"
+
+			// 真正的验收：收款接口能把 USERID/bizToken/sid 给我，才算登录成功。
+			// 只验证「my.alipay.com 不是登录页」不够 —— 那只能说明有 SSO，
+			// 后面每 5 秒拉收款记录靠的是 csmobile 那套。
+			var userID, bizToken, csid string
+			for attempt := 1; attempt <= 3; attempt++ {
+				userID, bizToken, csid, err = alipayChatTokens(&s)
+				if err == nil && userID != "" {
+					break
+				}
+				logWarn("alipay", "登录后验证收款接口第 %d 次失败：%v", attempt, err)
+				time.Sleep(time.Duration(attempt) * time.Second)
+			}
+			if err == nil && userID != "" {
+				s.PID = userID
+				s.MaskedID = maskPid(userID)
+				s.BizToken, s.SID = bizToken, csid
+				s.HeartbeatMsg = "在线"
+			} else {
+				s.HeartbeatMsg = "登录成功，但收款接口不可用：" + truncate(fmt.Sprint(err), 80)
+			}
+
+			upsertAlipaySession(s)
+			saveAlipaySessions()
+
+			if s.PID != "" {
+				upsertAccount(Account{
+					Type: "alipay", Wxid: s.PID, Nick: s.Nick,
+					ChannelID: s.ChannelID, ChannelCode: "alipay_app", Enabled: true,
+				})
+			}
+			logInfo("alipay", "登录完成：Cookie %d 条，PID=%s，%s",
+				len(cookies), maskPid(s.PID), s.HeartbeatMsg)
+		}()
+
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": sid, "mode": "browser"})
+	})
+
+	// 把浏览器里拿到的 Cookie 写进会话
+	mux.HandleFunc("/api/alipay/apply", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			ID      string         `json:"id"`
+			Cookies []AlipayCookie `json:"cookies"`
+			PID     string         `json:"pid"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "参数不对"})
+			return
+		}
+		s, ok := findAlipaySession(req.ID)
+		if !ok {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "会话不存在"})
+			return
+		}
+		s.Cookies = req.Cookies
+		if req.PID != "" {
+			s.PID = req.PID
+			s.MaskedID = maskPid(req.PID)
+		}
+		s.Status = "confirmed"
+		s.OnlineSince = time.Now().Format("2006-01-02T15:04:05Z07:00")
+		upsertAlipaySession(s)
+		saveAlipaySessions()
+
+		// 同步到上报账号表，Report() 才能找到它
+		if s.PID != "" {
+			ch := s.ChannelID
+			if a, had := findAccount(s.PID); had {
+				ch = a.ChannelID
+			}
+			upsertAccount(Account{
+				Type: "alipay", Wxid: s.PID, Nick: s.Nick,
+				ChannelID: ch, ChannelCode: "alipay_app", Enabled: true,
+			})
+		}
+		logInfo("alipay", "账号 %s 登录成功，Cookie %d 条", maskPid(s.PID), len(s.Cookies))
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+
+	// 绑定通道 ID
+	mux.HandleFunc("/api/alipay/channel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			ID        string `json:"id"`
+			ChannelID string `json:"channel_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "参数不对"})
+			return
+		}
+		s, ok := findAlipaySession(req.ID)
+		if !ok {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "会话不存在"})
+			return
+		}
+		s.ChannelID = strings.TrimSpace(req.ChannelID)
+		upsertAlipaySession(s)
+		saveAlipaySessions()
+		if s.PID != "" {
+			upsertAccount(Account{
+				Type: "alipay", Wxid: s.PID, Nick: s.Nick,
+				ChannelID: s.ChannelID, ChannelCode: "alipay_app", Enabled: true,
+			})
+		}
+		logInfo("config", "支付宝账号 %s 绑定通道 %s", maskPid(s.PID), s.ChannelID)
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+
+	// 抓一次账单并存原始响应，用于校准解析器
+	mux.HandleFunc("/api/alipay/fetch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		id := r.URL.Query().Get("id")
+		s, ok := findAlipaySession(id)
+		if !ok {
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "会话不存在"})
+			return
+		}
+		body, err := alipayFetchBill(&s)
+		now := time.Now().Format("2006-01-02T15:04:05Z07:00")
+		if err != nil {
+			// 抓失败也要把状态写回，否则界面还显示"在线"
+			s.LastCheck = now
+			s.HeartbeatMsg = err.Error()
+			if strings.Contains(err.Error(), "登录已失效") {
+				s.Status = "expired"
+			}
+			upsertAlipaySession(s)
+			saveAlipaySessions()
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		_ = os.WriteFile(alipayRawFile(), body, 0600)
+		bills := alipayParseBills(body)
+		s.LastCheck = now
+		s.LastHeartbeat = now
+		s.HeartbeatMsg = fmt.Sprintf("正常，解析到 %d 笔", len(bills))
+		upsertAlipaySession(s)
+		saveAlipaySessions()
+		logInfo("alipay", "抓账单：%d 字节，解析出 %d 条", len(body), len(bills))
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "bytes": len(body), "bills": bills,
+			"preview": firstN(string(body), 600),
+		})
+	})
+
+	// 手动轮询一次
+	mux.HandleFunc("/api/alipay/poll", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		alipayPollRound()
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+
 	mux.HandleFunc("/api/accounts", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
 			var a Account
@@ -391,12 +862,26 @@ func startServer() (int, error) {
 				http.Error(w, "bad request", 400)
 				return
 			}
+			// 通道编码不由用户选，按账号类型定
+			a.ChannelCode = inferChannelCode(a.Wxid)
 			upsertAccount(a)
-			logInfo("config", "账号通道已保存 wxid=%s 通道=%s", a.Wxid, a.ChannelID)
+			logInfo("config", "账号通道已保存 wxid=%s 通道=%s 编码=%s", a.Wxid, a.ChannelID, a.ChannelCode)
 			w.Write([]byte(`{"ok":true}`))
 			return
 		}
-		json.NewEncoder(w).Encode(accountsCopy())
+		// 默认只给微信账号，支付宝账号走 /api/alipay。
+		// 需要全部时加 ?type=all。
+		list := accountsCopy()
+		if r.URL.Query().Get("type") != "all" {
+			only := make([]Account, 0, len(list))
+			for _, a := range list {
+				if accountKind(a) == "wechat" {
+					only = append(only, a)
+				}
+			}
+			list = only
+		}
+		json.NewEncoder(w).Encode(list)
 	})
 
 	mux.HandleFunc("/api/accounts/delete", func(w http.ResponseWriter, r *http.Request) {
@@ -522,9 +1007,10 @@ func startServer() (int, error) {
 			return
 		}
 		var req struct {
-			Wxid      string `json:"wxid"`
-			Key       string `json:"key"`
-			ChannelID string `json:"channel_id"`
+			Wxid        string `json:"wxid"`
+			Key         string `json:"key"`
+			ChannelID   string `json:"channel_id"`
+			ChannelCode string `json:"channel_code"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Wxid == "" {
 			http.Error(w, "bad request", 400)
@@ -568,17 +1054,20 @@ func startServer() (int, error) {
 
 		// 保存账号：没传通道就保留原来的，避免把已绑定的清掉
 		ch := strings.TrimSpace(req.ChannelID)
+		code := strings.TrimSpace(req.ChannelCode)
 		old, had := findAccount(req.Wxid)
 		if ch == "" && had {
 			ch = old.ChannelID
 		}
+		// 通道编码按账号类型定，忽略请求里传来的值
+		code = inferChannelCode(req.Wxid)
 		nick := req.Wxid
 		if had && old.Nick != "" {
 			nick = old.Nick
 		}
 		upsertAccount(Account{
 			Wxid: req.Wxid, Nick: nick,
-			ChannelID: ch, Enabled: true,
+			ChannelID: ch, ChannelCode: code, Enabled: true,
 		})
 
 		// 保存到多账号列表（同一 wxid 就更新密钥，不重复添加）
