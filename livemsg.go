@@ -142,7 +142,7 @@ func StartLiveMonitor(wxid, dbPath, keyHex string) error {
 
 	m.running = true
 	go m.loop()
-	logInfo("monitor", "账号 %s 好友/群聊实时监控已启动", wxid)
+	logInfo("livemsg", "账号 %s 实时监控启动，库=%s", wxid, dbPath)
 	return nil
 }
 
@@ -196,6 +196,7 @@ func (m *LiveMonitor) pollOnce() {
 	if m.db == nil {
 		return
 	}
+	t0 := time.Now()
 	tables, err := m.db.Tables()
 	if err != nil {
 		return
@@ -284,6 +285,16 @@ func (m *LiveMonitor) pollOnce() {
 
 	// 按时间倒序（跨表收集时顺序是乱的）
 	sort.SliceStable(fresh, func(a, b int) bool { return fresh[a].Time > fresh[b].Time })
+
+	// 每轮都记耗时，超过轮询间隔就说明跟不上
+	cost := time.Since(t0)
+	if len(fresh) > 0 {
+		logInfo("livemsg", "[%s] 扫描 %d 表 → %d 条新消息，耗时 %dms（primed=%v）",
+			m.wxid, len(tables), len(fresh), cost.Milliseconds(), primed)
+	} else if cost > 2500*time.Millisecond {
+		logWarn("livemsg", "[%s] 扫描 %d 表耗时 %dms，超过轮询间隔",
+			m.wxid, len(tables), cost.Milliseconds())
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
