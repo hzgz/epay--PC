@@ -203,7 +203,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
       <a data-page="settings"><span class="ic">⚙</span>通知设置</a>
       <a data-page="about"><span class="ic">ⓘ</span>关于</a>
     </div>
-    <div class="side-foot">v1.20</div>
+    <div class="side-foot">v1.21</div>
   </div>
 
   <div class="main">
@@ -462,6 +462,23 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
           <div class="hint">微信重启后会自动重新连接</div>
         </div>
 
+        <div class="card">
+          <div class="head"><h2>日志</h2></div>
+          <div style="display:flex;align-items:center;gap:14px;padding:2px 0 4px">
+            <span style="font-size:14px;flex-shrink:0;white-space:nowrap">日志级别</span>
+            <select id="logLevel" class="sel" style="flex:1;min-width:0">
+              <option value="off">关闭（不写文件）</option>
+              <option value="">基本（推荐）</option>
+              <option value="debug">详细（排查问题用）</option>
+            </select>
+            <button class="btn ghost" id="btnOpenLog" style="flex-shrink:0">打开日志目录</button>
+          </div>
+          <div class="hint" style="margin-top:8px">
+            日志写在程序目录的 run.log，超过 8MB 自动轮转为 run.log.old。
+            「运行日志」页面始终显示全部级别，不受这里影响。
+          </div>
+        </div>
+
         <div class="save-bar"><button class="btn-save" id="btnSave">保存设置</button></div>
       </div>
 
@@ -479,7 +496,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         <div class="card" style="padding:0">
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">版本号</span>
-            <span style="font-size:14.5px">1.20</span>
+            <span style="font-size:14.5px">1.21</span>
           </div>
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">作者</span>
@@ -1716,6 +1733,7 @@ refreshWx(); refreshLogs(); refreshEnv(); refreshAccounts();
 </script>
 </body>
 </html>
+
 
 
 

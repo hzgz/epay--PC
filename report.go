@@ -193,6 +193,7 @@ func sendYjk(m *ChatMsg, c Config) ReportResult {
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(resp.Body)
+	logDebug("callback", "V1 响应 <- %d  %s", resp.StatusCode, truncate(string(rb), 200))
 	txt := strings.TrimSpace(string(rb))
 	ok := resp.StatusCode >= 200 && resp.StatusCode < 300
 	return ReportResult{OK: ok, Code: resp.StatusCode, Body: txt, URL: u, Sent: string(body), Delivered: true}
@@ -231,6 +232,8 @@ func sendV1(m *ChatMsg, c Config) ReportResult {
 	body := form.Encode()
 
 	u := fmt.Sprintf("%s/api/pay/%s/notify", site, url.PathEscape(channel))
+	logDebug("callback", "V1 上报 -> %s", u)
+	logDebug("callback", "V1 body: %s", truncate(body, 300))
 	req, err := http.NewRequest("POST", u, strings.NewReader(body))
 	if err != nil {
 		return ReportResult{Err: err.Error(), URL: u}
@@ -240,10 +243,12 @@ func sendV1(m *ChatMsg, c Config) ReportResult {
 	client := &http.Client{Timeout: 8 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		logError("callback", "V1 请求失败: %v", err)
 		return ReportResult{Err: err.Error(), URL: u, Sent: body}
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(resp.Body)
+	logDebug("callback", "V1 响应 <- %d  %s", resp.StatusCode, truncate(string(rb), 200))
 	txt := strings.TrimSpace(string(rb))
 	succ := resp.StatusCode >= 200 && resp.StatusCode < 300 && txt == "200"
 	return ReportResult{OK: succ, Code: resp.StatusCode, Body: txt, URL: u, Sent: body, Delivered: true}
@@ -262,11 +267,10 @@ func Report(m *ChatMsg) ReportResult {
 	}
 }
 
-
-
-
-
-
-
-
-
+// firstN 取前 n 个字符，用于日志里显示密钥/签名片段
+func firstN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}

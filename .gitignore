@@ -31,3 +31,5 @@ wcdbtest/
 
 # 联系人反推缓存（含用户数据）
 tablemap_*.json
+run.log.old
+nicks_*.json

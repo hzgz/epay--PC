@@ -116,6 +116,9 @@ func writeLogFile(ts time.Time, level, module, msg string) {
 			logFile = f
 		}
 	})
+	if !logFileEnabled(level) {
+		return
+	}
 	logFileMu.Lock()
 	defer logFileMu.Unlock()
 	if logFile == nil {
@@ -123,4 +126,18 @@ func writeLogFile(ts time.Time, level, module, msg string) {
 	}
 	fmt.Fprintf(logFile, "%s [%s] [%s] %s\n",
 		ts.Format("2006-01-02 15:04:05"), level, module, msg)
+}
+
+// logFileEnabled 按配置的日志级别决定这条要不要落盘。
+// 界面的「运行日志」不受影响，始终保留全部级别。
+func logFileEnabled(level string) bool {
+	lv := GetConfig().LogLevel
+	switch lv {
+	case "off":
+		return false
+	case "debug":
+		return true
+	default: // 基本：不写 DEBUG
+		return level != "DEBUG"
+	}
 }

@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.20"
+	AppVersion = "1.21"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -463,6 +463,7 @@ func main() {
 	}
 	runWindow(port)
 }
+
 
 
 

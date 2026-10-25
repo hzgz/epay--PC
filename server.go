@@ -3,6 +3,8 @@ package main
 // 内嵌 HTTP 服务：提供 UI 与配置/状态 API
 
 import (
+	"path/filepath"
+	"os"
 	"regexp"
 	"sort"
 	_ "embed"
@@ -716,6 +718,18 @@ func startServer() (int, error) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": len(nm), "map": nm})
 	})
+	// /api/openlogdir 在资源管理器里打开日志目录
+	mux.HandleFunc("/api/openlogdir", func(w http.ResponseWriter, r *http.Request) {
+		exe, err := os.Executable()
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		dir := filepath.Dir(exe)
+		openExplorer(dir)
+		http.Redirect(w, r, "/#logs", http.StatusFound)
+	})
+
 	// /api/clientlog 前端把 JS 异常报回来，方便排查界面问题
 	mux.HandleFunc("/api/clientlog", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

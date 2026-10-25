@@ -325,6 +325,9 @@ func (m *LiveMonitor) pollOnce() {
 
 	// 每轮都记耗时，超过轮询间隔就说明跟不上
 	cost := time.Since(t0)
+	// 详细模式下每轮留一条，方便确认轮询真的在跑
+	logDebug("livemsg", "[%s] 轮询 %d 表，新消息 %d 条，耗时 %dms",
+		m.wxid, len(tables), len(fresh), cost.Milliseconds())
 	if len(fresh) > 0 {
 		logInfo("livemsg", "[%s] 扫描 %d 表 → %d 条新消息，耗时 %dms（primed=%v）",
 			m.wxid, len(tables), len(fresh), cost.Milliseconds(), primed)

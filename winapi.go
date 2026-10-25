@@ -11,6 +11,7 @@ import (
 
 var (
 	kernel32          = syscall.NewLazyDLL("kernel32.dll")
+	procShellExecute  = shell32.NewProc("ShellExecuteW")
 	procOpenProcess   = kernel32.NewProc("OpenProcess")
 	procCloseHandle   = kernel32.NewProc("CloseHandle")
 	procVirtualAllocEx = kernel32.NewProc("VirtualAllocEx")
@@ -31,6 +32,7 @@ var (
 )
 
 const (
+	SW_SHOWNORMAL          = 1
 	PROCESS_ALL_ACCESS     = 0x1F0FFF
 	PROCESS_VM_READ        = 0x0010
 	PROCESS_QUERY_INFO     = 0x0400
@@ -229,4 +231,20 @@ func hideConsoleWindow() {
 	// 2) 完全脱离控制台：这样 conhost.exe 会退出，
 	//    也不会因为后台 Printf 又冒出来
 	procFreeConsole.Call()
+}
+
+// openExplorer 用资源管理器打开指定目录
+func openExplorer(dir string) {
+	verb, err := syscall.UTF16PtrFromString("open")
+	if err != nil {
+		return
+	}
+	path, err := syscall.UTF16PtrFromString(dir)
+	if err != nil {
+		return
+	}
+	procShellExecute.Call(0,
+		uintptr(unsafe.Pointer(verb)),
+		uintptr(unsafe.Pointer(path)),
+		0, 0, SW_SHOWNORMAL)
 }

@@ -38,6 +38,8 @@ type Config struct {
 	// 行为
 	AutoInject  bool `json:"auto_inject"`
 	WeChatExe   string `json:"wechat_exe"`
+	// LogLevel 日志文件级别："off" 不写 / "" 基本(INFO+) / "debug" 详细(含 DEBUG)
+	LogLevel string `json:"log_level"`
 
 	// 数据库读取（公众号/服务号消息）
 	DbEnabled bool        `json:"db_enabled"`  // 是否启用数据库读取
@@ -85,6 +87,7 @@ var (
 		IgnoreSelf: false,
 		AutoInject: false,
 		WeChatExe:  "",
+		LogLevel:   "",
 	}
 )
 
