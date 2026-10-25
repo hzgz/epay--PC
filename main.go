@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.16"
+	AppVersion = "1.17"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -397,7 +397,7 @@ func main() {
 			}
 			// 消息调试用的好友/群聊实时轮询
 			if acc.MsgDB != "" {
-				if err := StartLiveMonitor(acc.Wxid, acc.MsgDB, da.Key); err != nil {
+				if err := StartLiveMonitor(acc.Wxid, acc.MsgDB, acc.ContactDB, da.Key); err != nil {
 					logWarn("monitor", "账号 %s 实时消息监控启动失败: %v", da.Wxid, err)
 				}
 			}
@@ -453,6 +453,7 @@ func main() {
 	}
 	runWindow(port)
 }
+
 
 
 

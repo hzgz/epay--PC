@@ -136,5 +136,67 @@ func stripTags(s string) string {
 	return b.String()
 }
 
-
-
+// PayType 从收款消息标题里认出收款渠道 / 场景。
+// 例：
+//   微信支付收款0.10元(朋友到店)      -> 朋友到店
+//   二维码赞赏到账0.10元              -> 二维码赞赏
+//   [店员消息]收款到账0.10元          -> 店员消息
+//   已支付¥0.10                      -> 微信支付
+func ExtractPayType(title string) string {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		return ""
+	}
+	// 括号里的场景说明：微信支付收款0.10元(朋友到店)
+	if i := strings.Index(t, "("); i > 0 {
+		if j := strings.Index(t[i:], ")"); j > 1 {
+			inner := strings.TrimSpace(t[i+1 : i+j])
+			if inner != "" && len([]rune(inner)) <= 20 && !strings.Contains(inner, "元") {
+				return inner
+			}
+		}
+	}
+	// 方括号前缀：[店员消息]收款到账
+	if strings.HasPrefix(t, "[") {
+		if j := strings.Index(t, "]"); j > 1 {
+			return strings.TrimSpace(t[1:j])
+		}
+	}
+	// 书名号 / 尖括号前缀
+	for _, pair := range [][2]string{{"【", "】"}, {"<", ">"}} {
+		if strings.HasPrefix(t, pair[0]) {
+			if j := strings.Index(t, pair[1]); j > 0 {
+				return strings.TrimSpace(strings.TrimPrefix(t[:j], pair[0]))
+			}
+		}
+	}
+	// 关键词匹配
+	keywords := []struct {
+		kw   string
+		name string
+	}{
+		{"二维码赞赏", "二维码赞赏"},
+		{"赞赏", "赞赏"},
+		{"店员消息", "店员消息"},
+		{"店员", "店员"},
+		{"收款商业版", "收款商业版"},
+		{"对外收款", "对外收款"},
+		{"收款单", "收款单"},
+		{"收款到账", "收款到账"},
+		{"收款助手", "收款助手"},
+		{"微信支付收款", "扫码收款"},
+		{"微信支付凭证", "微信支付凭证"},
+		{"已支付", "微信支付"},
+		{"支付凭证", "微信支付凭证"},
+		{"退款", "退款"},
+		{"已退款", "退款"},
+		{"转账", "转账"},
+		{"已到账", "到账"},
+	}
+	for _, k := range keywords {
+		if strings.Contains(t, k.kw) {
+			return k.name
+		}
+	}
+	return ""
+}

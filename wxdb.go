@@ -458,3 +458,66 @@ func (d *WxDB) PeekAllTables(perTable int) ([]RawMsg, error) {
 	}
 	return out, nil
 }
+
+// Contact 联系人/公众号/群聊的基本信息
+type Contact struct {
+	Username  string `json:"username"`
+	NickName  string `json:"nick_name"`
+	Remark    string `json:"remark"`
+	Alias     string `json:"alias"`
+	LocalType int64  `json:"local_type"`
+	Flag      int64  `json:"flag"`
+}
+
+// Display 优先备注名，其次昵称，都没有就用 username
+func (c Contact) Display() string {
+	if c.Remark != "" {
+		return c.Remark
+	}
+	if c.NickName != "" {
+		return c.NickName
+	}
+	return c.Username
+}
+
+// Contacts 批量查联系人昵称。
+// wxtool_wcdb.dll 的 contact op 一次可以传多个 username，
+// 这是唯一能拿到昵称的途径（contact 表本身读不了行）。
+func (d *WxDB) Contacts(usernames []string) ([]Contact, error) {
+	if len(usernames) == 0 {
+		return nil, nil
+	}
+	v, err := d.query("contact", map[string]any{"usernames": usernames})
+	if err != nil {
+		return nil, err
+	}
+	list, _ := v.([]any)
+	out := make([]Contact, 0, len(list))
+	for _, it := range list {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		c := Contact{}
+		if x, ok := m["username"].(string); ok {
+			c.Username = x
+		}
+		if x, ok := m["nick_name"].(string); ok {
+			c.NickName = x
+		}
+		if x, ok := m["remark"].(string); ok {
+			c.Remark = x
+		}
+		if x, ok := m["alias"].(string); ok {
+			c.Alias = x
+		}
+		if x, ok := m["local_type"].(float64); ok {
+			c.LocalType = int64(x)
+		}
+		if x, ok := m["flag"].(float64); ok {
+			c.Flag = int64(x)
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}

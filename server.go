@@ -62,6 +62,7 @@ type MsgView struct {
 	Time     uint64  `json:"time"`
 	RawID    string  `json:"rawid"`
 	Amount   float64 `json:"amount"`
+	PayType  string  `json:"pay_type"`
 	Reported bool    `json:"reported"`
 	Err      string  `json:"err"`
 
@@ -171,6 +172,7 @@ type DebugItem struct {
 	Time     uint64  `json:"time"`
 	MsgID    uint64  `json:"msgid"`
 	Amount   float64 `json:"amount"`
+	PayType  string  `json:"pay_type"`
 	Bytes    int     `json:"bytes"`
 	RawHead  string  `json:"raw_head"`
 	At       string  `json:"at"`
@@ -246,6 +248,7 @@ func (e *Engine) addDebug(m *ChatMsg, rawLen int) {
 	}
 	e.debugSeq++
 	it := DebugItem{
+		PayType: ExtractPayType(m.Display),
 		Seq: e.debugSeq, From: m.From, To: m.To, Content: m.Content,
 		Display: m.Display, Time: m.Time, MsgID: m.MsgID, Amount: m.Amount,
 		Bytes: rawLen, RawHead: head, At: time.Now().Format("15:04:05"),
@@ -667,6 +670,52 @@ func startServer() (int, error) {
 		w.Write([]byte(`{"ok":true}`))
 	})
 
+	// /api/debug/nicks 预热并查看联系人昵称（诊断用）
+	mux.HandleFunc("/api/debug/nicks", func(w http.ResponseWriter, r *http.Request) {
+		wxid := r.URL.Query().Get("wxid")
+		if wxid == "" {
+			if c := GetConfig(); c.DbWxid != "" {
+				wxid = c.DbWxid
+			}
+		}
+		acc, ok := findWxAccount(wxid)
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "找不到账号"})
+			return
+		}
+		keyHex := ""
+		for _, da := range GetConfig().EffectiveDbAccounts() {
+			if da.Wxid == wxid {
+				keyHex = da.Key
+				break
+			}
+		}
+		if keyHex == "" && GetConfig().DbWxid == wxid {
+			keyHex = GetConfig().DbKey
+		}
+		// 用 message_0.db 里所有表名反推的 wxid 当待查列表
+		tm := loadTableMap(wxid)
+		var usernames []string
+		for _, v := range tm {
+			usernames = append(usernames, v)
+		}
+		var cdb *WxDB
+		if acc.ContactDB != "" {
+			if x, err := OpenWxDB(acc.ContactDB, keyHex); err == nil {
+				cdb = x
+				defer x.Close()
+			}
+		}
+		if cdb == nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "contact.db 打不开"})
+			return
+		}
+		nm := WarmNicks(cdb, wxid, usernames)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": len(nm), "map": nm})
+	})
 	// /api/clientlog 前端把 JS 异常报回来，方便排查界面问题
 	mux.HandleFunc("/api/clientlog", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -695,11 +744,12 @@ func startServer() (int, error) {
 			rows = append(rows, DebugItem{
 				Seq:     i + 1,
 				From:    e.From,
-				To:      wxid,
+				To:      "我",
 				Content: e.Preview,
 				Display: e.Preview,
 				Time:    uint64(e.Time),
 				Bytes:   len(e.Preview),
+				PayType: e.PayType,
 				At:      time.Unix(e.Time, 0).Format("15:04:05"),
 			})
 		}
@@ -766,6 +816,7 @@ func startServer() (int, error) {
 			}
 			rows = append(rows, DebugItem{
 				Seq:     len(rows) + 1,
+				PayType: ExtractPayType(gm.Title),
 				From:    nick,
 				To:      wxid,
 				Content: gm.Title,
@@ -839,6 +890,14 @@ func startServer() (int, error) {
 		}
 		nameMap := resolveTableNames(db, wxid, todo)
 		db.Close()
+		// 昵称延后到 rows 建好后再查（要覆盖从消息内容提取出来的 from）
+		var cdb *WxDB
+		if acc.ContactDB != "" {
+			if x, err := OpenWxDB(acc.ContactDB, keyHex); err == nil {
+				cdb = x
+				defer x.Close()
+			}
+		}
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
 			return
@@ -923,6 +982,21 @@ func startServer() (int, error) {
 			rows = append(rows, row{Table: m.Table, LocalID: m.LocalID, Time: m.CreateAt, Preview: preview, From: from})
 		}
 		sort.Slice(rows, func(a, b int) bool { return rows[a].Time > rows[b].Time })
+		// 统一把 wxid / gh_id / 表名换成中文昵称
+		seenN := map[string]bool{}
+		var needNicks []string
+		for _, rr := range rows {
+			if rr.From != "" && rr.From != "我" && !seenN[rr.From] {
+				seenN[rr.From] = true
+				needNicks = append(needNicks, rr.From)
+			}
+		}
+		nickMap := WarmNicks(cdb, wxid, needNicks)
+		for i := range rows {
+			if v, ok := nickMap[rows[i].From]; ok && v != "" {
+				rows[i].From = v
+			}
+		}
 		w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": len(rows), "rows": rows})
 	})
 	mux.HandleFunc("/api/debug", func(w http.ResponseWriter, r *http.Request) {
@@ -958,6 +1032,8 @@ func startServer() (int, error) {
 	go http.Serve(ln, mux)
 	return port, nil
 }
+
+
 
 
 

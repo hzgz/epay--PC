@@ -91,6 +91,8 @@ type liveMsg struct {
 	Time    int64
 	LocalID int64
 	IsGh    bool
+	PayType string
+	GName   string // 公众号名（收款助手 / 微信支付）
 }
 
 // LiveMonitor 轮询 message_0.db，把新消息推给「消息调试」
@@ -105,6 +107,7 @@ type LiveMonitor struct {
 	// 首次采样时只记游标，不推消息
 	primed bool
 	db     *WxDB
+	cdb    *WxDB // contact.db，用来查昵称
 	wxid   string
 	pushed int64
 }
@@ -117,7 +120,7 @@ var (
 const liveKeep = 40
 
 // StartLiveMonitor 开始轮询某个账号的 message_0.db
-func StartLiveMonitor(wxid, dbPath, keyHex string) error {
+func StartLiveMonitor(wxid, dbPath, contactPath, keyHex string) error {
 	liveMonMu.Lock()
 	if old := liveMons[wxid]; old != nil {
 		liveMonMu.Unlock()
@@ -135,6 +138,14 @@ func StartLiveMonitor(wxid, dbPath, keyHex string) error {
 		last: map[string]int64{},
 		db:   db,
 		wxid: wxid,
+	}
+	// 昵称需要查 contact.db，单独开一个连接
+	if contactPath != "" {
+		if cdb, err := OpenWxDB(contactPath, keyHex); err == nil {
+			m.cdb = cdb
+		} else {
+			logWarn("livemsg", "账号 %s 打开 contact.db 失败（昵称将显示为 wxid）：%v", wxid, err)
+		}
 	}
 	liveMonMu.Lock()
 	liveMons[wxid] = m
@@ -173,6 +184,9 @@ func (m *LiveMonitor) Stop() {
 	}
 	if m.db != nil {
 		m.db.Close()
+	}
+	if m.cdb != nil {
+		m.cdb.Close()
 	}
 }
 
@@ -283,7 +297,26 @@ func (m *LiveMonitor) pollOnce() {
 			fresh = append(fresh, liveMsg{
 				Table: t, From: from, Preview: prev,
 				Time: raw.CreateAt, LocalID: raw.LocalID,
+				PayType: ExtractPayType(prev),
 			})
+		}
+	}
+
+	// 批量补昵称：把 from 里还是 wxid 的换成中文名
+	if len(fresh) > 0 {
+		var need []string
+		seenU := map[string]bool{}
+		for _, f := range fresh {
+			if f.From != "" && f.From != "我" && !seenU[f.From] {
+				seenU[f.From] = true
+				need = append(need, f.From)
+			}
+		}
+		nm := WarmNicks(m.cdb, m.wxid, need)
+		for i := range fresh {
+			if v, ok := nm[fresh[i].From]; ok && v != "" {
+				fresh[i].From = v
+			}
 		}
 	}
 

@@ -203,7 +203,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
       <a data-page="settings"><span class="ic">⚙</span>通知设置</a>
       <a data-page="about"><span class="ic">ⓘ</span>关于</a>
     </div>
-    <div class="side-foot">v1.16</div>
+    <div class="side-foot">v1.17</div>
   </div>
 
   <div class="main">
@@ -479,7 +479,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         <div class="card" style="padding:0">
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">版本号</span>
-            <span style="font-size:14.5px">1.16</span>
+            <span style="font-size:14.5px">1.17</span>
           </div>
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">作者</span>
@@ -844,7 +844,7 @@ function dbgRender(){
     const obj = {
       seq:d.seq, from:d.from, to:d.to, content:d.content, display:d.display,
       time:d.time, msgid:d.msgid, amount:d.amount, bytes:d.bytes,
-      raw_head:d.raw_head, at:d.at
+      raw_head:d.raw_head, pay_type:d.pay_type, at:d.at
     };
     return `<div class="dbg-it" data-i="${i}" style="padding:10px 12px;border-radius:7px;cursor:pointer;
       ${i===0?'background:#fff;border:1px solid var(--line)':''}margin-bottom:6px">
@@ -852,6 +852,7 @@ function dbgRender(){
         ${live?`<span style="font-size:11px;padding:1px 7px;border-radius:4px;background:var(--green);color:#fff;font-weight:600">实时</span>`:''}
         <span style="font-size:12px;color:var(--sub)">${d.at} · ${ago}</span>
         <span style="font-size:11px;color:var(--hint)">${d.bytes}B</span>
+        ${d.pay_type?`<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:#EEF6FF;color:#1677FF">${esc(d.pay_type)}</span>`:''}
         ${d.amount>0?`<span style="font-size:11px;color:var(--green)">¥${d.amount.toFixed(2)}</span>`:''}
       </div>
       <div style="font-size:13px;color:var(--text);word-break:break-all">${esc(d.content)}</div>
@@ -1061,7 +1062,7 @@ function dbgCurJSON(){
   return JSON.stringify({
     seq:d.seq, from:d.from, to:d.to, content:d.content, display:d.display,
     time:d.time, msgid:d.msgid, amount:d.amount, bytes:d.bytes,
-    raw_head:d.raw_head, at:d.at
+    raw_head:d.raw_head, pay_type:d.pay_type, at:d.at
   }, null, 2);
 }
 
@@ -1715,6 +1716,7 @@ refreshWx(); refreshLogs(); refreshEnv(); refreshAccounts();
 </script>
 </body>
 </html>
+
 
 
 
