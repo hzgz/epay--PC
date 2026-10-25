@@ -6,6 +6,7 @@ package main
 // 这一层覆盖了 hook 抓不到的场景：微信收款助手、微信支付的收款/赞赏通知。
 
 import (
+	"golang.org/x/sys/windows/registry"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -364,13 +365,97 @@ type WxAccount struct {
 }
 
 // WeChatRoot 微信数据根目录
+// isWxDataRoot 判断某个目录本身是不是微信数据根目录
+func isWxDataRoot(p string) bool {
+	st, err := os.Stat(p)
+	if err != nil || !st.IsDir() {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(p, "all_users")); err == nil {
+		return true
+	}
+	ents, err := os.ReadDir(p)
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "wxid_") {
+			return true
+		}
+	}
+	return false
+}
+
+// weChatRootFromRegistry 读注册表里微信记录的存储路径。
+// 用户把数据目录改到别的盘时，这里能拿到；默认值写作 "MyDocument:"。
+func weChatRootFromRegistry() []string {
+	var out []string
+	home, _ := os.UserHomeDir()
+
+	readPath := func(key, value string) {
+		k, err := registry.OpenKey(registry.CURRENT_USER, key, registry.QUERY_VALUE)
+		if err != nil {
+			return
+		}
+		v, _, e := k.GetStringValue(value)
+		k.Close()
+		if e != nil || v == "" {
+			return
+		}
+		v = strings.TrimSpace(v)
+		if strings.HasPrefix(strings.ToLower(v), "mydocument") {
+			v = filepath.Join(home, "Documents")
+		}
+		v = strings.TrimRight(v, "\\/")
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+
+	readPath(`SOFTWARE\Tencent\Weixin`, "FileSavePath")
+	readPath(`SOFTWARE\Tencent\Weixin`, "OldFileSavePath")
+	readPath(`SOFTWARE\Tencent\WeChat`, "FileSavePath")
+	return out
+}
+
+// WeChatRoot 找微信数据根目录（xwechat_files）。
+// 顺序：注册表记录的路径 -> 文档目录 -> 各盘常见位置。
+// 换设备、用户把数据目录改到别的盘时都能命中。
 func WeChatRoot() string {
 	home, _ := os.UserHomeDir()
-	for _, p := range []string{
-		filepath.Join(home, "Documents", "xwechat_files"),
-		filepath.Join(home, "Documents", "WeChat Files"),
-	} {
-		if st, err := os.Stat(p); err == nil && st.IsDir() {
+
+	checkBase := func(base string) string {
+		for _, sub := range []string{"xwechat_files", "WeChat Files"} {
+			p := filepath.Join(base, sub)
+			if st, err := os.Stat(p); err == nil && st.IsDir() {
+				return p
+			}
+		}
+		if isWxDataRoot(base) {
+			return base
+		}
+		return ""
+	}
+
+	for _, base := range weChatRootFromRegistry() {
+		if p := checkBase(base); p != "" {
+			return p
+		}
+		if p := checkBase(filepath.Dir(base)); p != "" {
+			return p
+		}
+	}
+
+	if p := checkBase(filepath.Join(home, "Documents")); p != "" {
+		return p
+	}
+
+	for _, drive := range []string{"C", "D", "E", "F", "G", "H"} {
+		base := drive + ":" + string(os.PathSeparator)
+		if p := checkBase(base); p != "" {
+			return p
+		}
+		if p := checkBase(filepath.Join(base, "Tencent")); p != "" {
 			return p
 		}
 	}
