@@ -321,6 +321,11 @@ func (m *WxMonitor) recordDebug(w *WxWatch, raw RawMsg, gm GhMessage, title stri
 	if eng == nil {
 		return
 	}
+	// 只保留收款相关的公众号，营销推送不进调试
+	nick, gh := ghIdentity(gm.Decoded)
+	if !isAllowedGh(nick, gh) && !isAllowedGh(w.Name, w.GhID) {
+		return
+	}
 	display := title
 	if display == "" {
 		display = strings.TrimSpace(gm.Decoded)
@@ -467,6 +472,7 @@ func InitDefaultWatches() {
 }
 
 var _ = os.Stat
+
 
 
 

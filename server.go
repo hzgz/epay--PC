@@ -336,7 +336,6 @@ func startServer() (int, error) {
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(eng.snapshot())
 	})
-
 	mux.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		limit := 200
@@ -511,7 +510,6 @@ func startServer() (int, error) {
 		json.NewEncoder(w).Encode(scanProgress())
 	})
 
-
 	// 绑定账号：校验密钥 → 保存账号与配置 → 启动监控
 	mux.HandleFunc("/api/wx/bind", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -669,6 +667,123 @@ func startServer() (int, error) {
 		w.Write([]byte(`{"ok":true}`))
 	})
 
+	// /api/clientlog 前端把 JS 异常报回来，方便排查界面问题
+	mux.HandleFunc("/api/clientlog", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Where string `json:"where"`
+			Msg   string `json:"msg"`
+			Stack string `json:"stack"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		logError("client", "[%s] %s", body.Where, body.Msg)
+		if body.Stack != "" {
+			logError("client", "  %s", truncate(body.Stack, 300))
+		}
+		w.WriteHeader(204)
+	})
+	// /api/debug/live 好友/群聊的实时消息（由 LiveMonitor 每 5 秒轮询 message_0.db）
+	mux.HandleFunc("/api/debug/live", func(w http.ResponseWriter, r *http.Request) {
+		wxid := r.URL.Query().Get("wxid")
+		if wxid == "" {
+			if c := GetConfig(); c.DbWxid != "" {
+				wxid = c.DbWxid
+			}
+		}
+		events := LiveSnapshot(wxid)
+		rows := make([]DebugItem, 0, len(events))
+		for i, e := range events {
+			rows = append(rows, DebugItem{
+				Seq:     i + 1,
+				From:    e.From,
+				To:      wxid,
+				Content: e.Preview,
+				Display: e.Preview,
+				Time:    uint64(e.Time),
+				Bytes:   len(e.Preview),
+				At:      time.Unix(e.Time, 0).Format("15:04:05"),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": len(rows), "items": rows})
+	})
+	// /api/debug/recent 立刻拉一批最近的公众号消息给「消息调试」。
+	// 否则用户点「开始捕获」后要一直等到有新收款才有东西看。
+	mux.HandleFunc("/api/debug/recent", func(w http.ResponseWriter, r *http.Request) {
+		wxid := r.URL.Query().Get("wxid")
+		if wxid == "" {
+			if c := GetConfig(); c.DbWxid != "" {
+				wxid = c.DbWxid
+			}
+		}
+		acc, ok := findWxAccount(wxid)
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "找不到账号"})
+			return
+		}
+		keyHex := ""
+		for _, da := range GetConfig().EffectiveDbAccounts() {
+			if da.Wxid == wxid {
+				keyHex = da.Key
+				break
+			}
+		}
+		if keyHex == "" && GetConfig().DbWxid == wxid {
+			keyHex = GetConfig().DbKey
+		}
+		if keyHex == "" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "该账号还没有通行密钥"})
+			return
+		}
+		db, err := OpenWxDB(acc.BizDB, keyHex)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "打开 biz_message_0.db 失败：" + err.Error()})
+			return
+		}
+		msgs, err := db.PeekAllTables(3)
+		db.Close()
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		rows := make([]DebugItem, 0, len(msgs))
+		for _, m := range msgs {
+			gm := ParseGhContent(m.Content)
+			// 只保留收款相关的公众号，营销推送不显示
+			nick, gh := ghIdentity(gm.Decoded)
+			if !isAllowedGh(nick, gh) {
+				continue
+			}
+			display := gm.Title
+			if display == "" {
+				display = truncate(gm.Decoded, 80)
+			}
+			if nick == "" {
+				nick = m.Table
+			}
+			rows = append(rows, DebugItem{
+				Seq:     len(rows) + 1,
+				From:    nick,
+				To:      wxid,
+				Content: gm.Title,
+				RawText: gm.Decoded,
+				Display: display,
+				Time:    uint64(m.CreateAt),
+				Amount:  gm.Amount,
+				Bytes:   len(m.Content),
+				At:      time.Unix(m.CreateAt, 0).Format("15:04:05"),
+			})
+		}
+		sort.Slice(rows, func(a, b int) bool { return rows[a].Time > rows[b].Time })
+		if len(rows) > 8 {
+			rows = rows[:8]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": len(rows), "items": rows})
+	})
 	// /api/debug/scan 扫 message_0.db 的所有表，把好友 / 群聊消息也列出来。
 	// 微信 4.x 里每个联系人或群聊对应一张 Msg_<hash> 表。
 	mux.HandleFunc("/api/debug/scan", func(w http.ResponseWriter, r *http.Request) {
@@ -843,39 +958,6 @@ func startServer() (int, error) {
 	go http.Serve(ln, mux)
 	return port, nil
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

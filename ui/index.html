@@ -203,7 +203,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
       <a data-page="settings"><span class="ic">⚙</span>通知设置</a>
       <a data-page="about"><span class="ic">ⓘ</span>关于</a>
     </div>
-    <div class="side-foot">v1.13</div>
+    <div class="side-foot">v1.14</div>
   </div>
 
   <div class="main">
@@ -479,7 +479,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         <div class="card" style="padding:0">
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">版本号</span>
-            <span style="font-size:14.5px">1.13</span>
+            <span style="font-size:14.5px">1.14</span>
           </div>
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">作者</span>
@@ -536,11 +536,12 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         <span id="dbgClose" style="cursor:pointer;color:var(--sub);font-size:18px">✕</span>
       </div>
       <div style="font-size:12.5px;color:var(--sub);margin-top:6px">
-        公众号消息在金额识别前自动进这里（最多 20 条）；好友 / 群聊消息点「扫好友群聊」按需读取。
+        点「开始捕获」立刻载入最近 8 条做参考（标灰，带时间差），之后新到的会打上绿色「实时」标记，最多保留 20 条。好友 / 群聊点「扫好友群聊」。
       </div>
     </div>
     <div style="padding:12px 22px;display:flex;align-items:center;gap:10px">
       <span class="badge" id="dbgBadge"><span class="d"></span>捕获已停止</span>
+      <span id="dbgLast" style="font-size:11.5px;color:var(--hint)"></span>
       <span style="font-size:13px" id="dbgCount">0 / 20 条</span>
       <span style="flex:1"></span>
       <span style="font-size:11.5px;color:var(--hint)">调试时可能包含账号和消息内容，复制后请妥善处理。</span>
@@ -805,7 +806,19 @@ $('#btnRefresh').onclick=()=>{refresh();toast('已刷新');};
 $('#btnReinject').onclick=async()=>{toast('正在重连…');await fetch('/api/reinject',{method:'POST'});setTimeout(refresh,900);};
 
 /* ---------- 消息调试 ---------- */
+// 把前端异常报回后端日志，方便排查 WebView2 里的问题
+function reportErr(where, e){
+  try{
+    fetch('/api/clientlog', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({where: where, msg: (e && e.message) ? e.message : String(e),
+                            stack: (e && e.stack) ? e.stack : ''})});
+  }catch(_){}
+}
+window.onerror = function(m, src, line, col, err){ reportErr('onerror', err || {message:m+' @'+line+':'+col}); };
+window.addEventListener('unhandledrejection', ev => reportErr('promise', ev.reason));
+
 let dbgOpen=false, dbgRun=false, dbgItems=[], dbgTimer=null;
+let dbgBaseline=0;   // 点「开始捕获」的时刻，之后进来的消息算实时
 
 function dbgRender(){
   const box=$('#dbgList');
@@ -815,7 +828,14 @@ function dbgRender(){
       点击“开始捕获”后发送或接收一条微信消息</div>`;
     return;
   }
+  const now = Math.floor(Date.now()/1000);
   box.innerHTML = dbgItems.map((d,i)=>{
+    const live = dbgBaseline > 0 && (d.time||0) > dbgBaseline;
+    const age = now - (d.time||0);
+    const ago = age < 5 ? '刚刚' : age < 60 ? age+' 秒前'
+              : age < 3600 ? Math.floor(age/60)+' 分钟前'
+              : age < 86400 ? Math.floor(age/3600)+' 小时前'
+              : Math.floor(age/86400)+' 天前';
     const obj = {
       seq:d.seq, from:d.from, to:d.to, content:d.content, display:d.display,
       time:d.time, msgid:d.msgid, amount:d.amount, bytes:d.bytes,
@@ -824,7 +844,8 @@ function dbgRender(){
     return `<div class="dbg-it" data-i="${i}" style="padding:10px 12px;border-radius:7px;cursor:pointer;
       ${i===0?'background:#fff;border:1px solid var(--line)':''}margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
-        <span style="font-size:12px;color:var(--sub)">#${d.seq} · ${d.at}</span>
+        ${live?`<span style="font-size:11px;padding:1px 7px;border-radius:4px;background:var(--green);color:#fff;font-weight:600">实时</span>`:''}
+        <span style="font-size:12px;color:var(--sub)">${d.at} · ${ago}</span>
         <span style="font-size:11px;color:var(--hint)">${d.bytes}B</span>
         ${d.amount>0?`<span style="font-size:11px;color:var(--green)">¥${d.amount.toFixed(2)}</span>`:''}
       </div>
@@ -840,16 +861,91 @@ function dbgRender(){
   });
 }
 
-async function dbgPull(){
-  // 数据库方案下公众号消息一直在记录，不再依赖「开始捕获」开关
+// dbgLoadRecent 立刻拉最近的公众号消息（不等新消息）
+// 所有正在监控的账号
+async function dbgWxids(){
   try{
-    const arr = await (await fetch('/api/debug')).json() || [];
-    if(arr.length || dbgRun){
-      dbgItems = arr;
-      $('#dbgCount').textContent = `${arr.length} / 20 条`;
-      dbgRender();
+    const s = await (await fetch('/api/status')).json();
+    return (s.wx_accounts || []).filter(x=>x.running).map(x=>x.wxid);
+  }catch(e){ return []; }
+}
+
+// 只拉实时数据（轮询用）。
+// 注意：/api/debug/recent 每次都会重新打开 biz_message_0.db，
+// 放到 800ms 轮询里会拖垮 WCDB，所以它只在「开始捕获」时调一次。
+async function dbgFetchLive(){
+  const wxids = await dbgWxids();
+  if(!wxids.length) return new Map();
+  const bags = await Promise.all(wxids.map(w => {
+    const q = encodeURIComponent(w);
+    return fetch('/api/debug/live?wxid='+q).then(x=>x.json()).catch(()=>({}));
+  }));
+  const ghLive = await fetch('/api/debug').then(x=>x.json()).catch(()=>[]);
+
+  // 同一条消息可能同时存在于两个账号的库里（互相聊天时），
+  // 去重只看「时间 + 内容」，发送者优先保留已识别的（不是 Msg_ 开头）
+  const byKey = new Map();
+  const push = (it) => {
+    if(!it) return;
+    const k = (it.time||0)+'|'+(it.display||it.content||'');
+    const prev = byKey.get(k);
+    if(!prev){ byKey.set(k, it); return; }
+    const prevBad = String(prev.from||'').startsWith('Msg_');
+    const curBad = String(it.from||'').startsWith('Msg_');
+    if(prevBad && !curBad) byKey.set(k, it);
+  };
+  for(const c of bags){
+    if(c && c.ok && c.items) c.items.forEach(push);
+  }
+  if(Array.isArray(ghLive)) ghLive.forEach(push);
+  return byKey;
+}
+
+async function dbgLoadRecent(){
+  try{
+    dbgBaseline = Math.floor(Date.now()/1000);
+    const wxids = await dbgWxids();
+    // 只在这一刻读一次公众号历史，之后靠实时接口
+    const hist = await Promise.all(wxids.map(w =>
+      fetch('/api/debug/recent?wxid='+encodeURIComponent(w)).then(x=>x.json()).catch(()=>({}))
+    ));
+    const map = await dbgFetchLive();
+    for(const a of hist){ if(a && a.ok && a.items) a.items.forEach(it=>{
+      const k = (it.time||0)+'|'+(it.display||it.content||'');
+      if(!map.has(k)) map.set(k, it);
+    }); }
+    const all = [...map.values()];
+    all.sort((x,y)=>(y.time||0)-(x.time||0));
+    dbgItems = all.slice(0, 30);
+    $('#dbgCount').textContent = dbgItems.length ? `${dbgItems.length} 条 · 捕获中…` : '等待新消息…';
+    dbgRender();
+  }catch(e){
+    $('#dbgCount').textContent = '加载失败: ' + (e && e.message ? e.message : e);
+    console.error('dbgLoadRecent', e); reportErr('dbgLoadRecent', e);
+  }
+}
+
+async function dbgPull(){
+  if(!dbgRun) return;
+  try{
+    const map = await dbgFetchLive();
+    // 把已有条目也并进来，避免历史被实时数据挤掉
+    for(const it of dbgItems){
+      const k = (it.time||0)+'|'+(it.display||it.content||'');
+      if(!map.has(k)) map.set(k, it);
     }
-  }catch(e){}
+    const all = [...map.values()];
+    all.sort((x,y)=>(y.time||0)-(x.time||0));
+    dbgItems = all.slice(0, 30);
+    $('#dbgCount').textContent = `${dbgItems.length} 条 · 捕获中…`;
+    const lt = $('#dbgLast');
+    if(lt) lt.textContent = '最后刷新 ' + new Date().toLocaleTimeString('zh-CN',{hour12:false});
+    dbgRender();
+  }catch(e){
+    const lt = $('#dbgLast');
+    if(lt) lt.textContent = '刷新失败: ' + (e && e.message ? e.message : e);
+    console.error('dbgPull', e); reportErr('dbgPull', e);
+  }
 }
 
 // 扫好友 / 群聊：读 message_0.db 里所有 Msg_ 表的最新几条
@@ -904,6 +1000,8 @@ function dbgCurJSON(){
 function dbgOpenModal(){
   $('#dbgMask').style.display='flex';
   dbgOpen=true;
+  // 打开就自动开始捕获，不用用户再点一次
+  if(!dbgRun){ setTimeout(()=>{ document.getElementById('dbgToggle').click(); }, 120); }
   // 未开始捕获时不拉取任何数据，界面保持空白提示
   if(dbgRun) dbgPull();
   else dbgRender();
@@ -911,16 +1009,18 @@ function dbgOpenModal(){
 
 $('#btnDebug').onclick = dbgOpenModal;
 $('#dbgScanAll').onclick = dbgScanFriends;
-$('#dbgClose').onclick = $('#dbgClose2').onclick = ()=>{ $('#dbgMask').style.display='none'; dbgOpen=false; };
-$('#dbgMask').onclick = (e)=>{ if(e.target.id==='dbgMask'){ $('#dbgMask').style.display='none'; dbgOpen=false; } };
+$('#dbgClose').onclick = $('#dbgClose2').onclick = ()=>{ $('#dbgMask').style.display='none'; dbgOpen=false; if(dbgRun) document.getElementById('dbgToggle').click(); };
+$('#dbgMask').onclick = (e)=>{ if(e.target.id==='dbgMask'){ $('#dbgMask').style.display='none'; dbgOpen=false; if(dbgRun) document.getElementById('dbgToggle').click(); } };
 
-$('#dbgToggle').onclick = ()=>{
+$('#dbgToggle').onclick = async ()=>{
   dbgRun = !dbgRun;
   const b=$('#dbgToggle'), badge=$('#dbgBadge');
   if(dbgRun){
     b.textContent='停止捕获';
     badge.className='badge on'; badge.innerHTML='<span class="d"></span>捕获中';
     dbgTimer = setInterval(dbgPull, 800);
+    // 先立刻拉一批最近的公众号消息，否则要等到有新收款才有东西看
+    await dbgLoadRecent();
     dbgPull();
   }else{
     b.textContent='开始捕获';
@@ -929,6 +1029,7 @@ $('#dbgToggle').onclick = ()=>{
     // 停止后清空展示，避免残留上一次的内容
     dbgItems = [];
     $('#dbgCount').textContent = '0 / 20 条';
+    const lt2 = $('#dbgLast'); if(lt2) lt2.textContent = '';
     dbgRender();
   }
 };
@@ -1541,9 +1642,13 @@ $('#tmMask').onclick = (e)=>{ if(e.target.id==='tmMask') $('#tmMask').style.disp
 loadConfig().then(refresh);
 setInterval(()=>{ refresh(); refreshWx(); refreshLogs(); refreshEnv(); refreshAccounts(); },1500);
 refreshWx(); refreshLogs(); refreshEnv(); refreshAccounts();
+
 </script>
 </body>
 </html>
+
+
+
 
 
 
