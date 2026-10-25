@@ -37,7 +37,10 @@ func TestSQLCipherHMAC(t *testing.T) {
 	}
 	t.Logf("首页 %d B  salt=%x", len(page1), page1[:16])
 
-	const known = "da9205a940494db897e7664d126c68faaff472aaff0e4b77aa4a4b6390edde53"
+	known := testKey1()
+	if known == "" {
+		t.Skip("没设置 WX_TEST_KEY1，跳过（这是真实数据库密钥，不进仓库）")
+	}
 	wrong := "0000000000000000000000000000000000000000000000000000000000000000"
 
 	start := time.Now()
@@ -87,7 +90,10 @@ func TestSQLCipherParallel(t *testing.T) {
 	if err != nil {
 		t.Skip("读首页失败")
 	}
-	const known = "da9205a940494db897e7664d126c68faaff472aaff0e4b77aa4a4b6390edde53"
+	known := testKey1()
+	if known == "" {
+		t.Skip("没设置 WX_TEST_KEY1，跳过")
+	}
 
 	// 先确认单线程基准（同一份 page1）
 	if !scVerifyPage1(mustHex(known), page1) {
@@ -147,6 +153,9 @@ func mustHex(s string) []byte {
 	}
 	return out
 }
+
+
+
 
 
 

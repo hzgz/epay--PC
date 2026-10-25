@@ -9,7 +9,7 @@ import (
 func TestWxDBReal(t *testing.T) {
 	key := os.Getenv("WX_KEY")
 	if key == "" {
-		key = "da9205a940494db897e7664d126c68faaff472aaff0e4b77aa4a4b6390edde53"
+		key = testKey1()
 	}
 
 	// 1. 扫描账号
@@ -89,6 +89,8 @@ func truncateStr(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
+
 
 
 

@@ -24,7 +24,10 @@ func TestVerifyKeyCrossAccount(t *testing.T) {
 		t.Skipf("需要至少两个有 biz 库的账号，当前 %d 个", len(accs))
 	}
 
-	const known = "da9205a940494db897e7664d126c68faaff472aaff0e4b77aa4a4b6390edde53"
+	known := testKey1()
+	if known == "" {
+		t.Skip("没设置 WX_TEST_KEY1，跳过")
+	}
 
 	// 先打印每个账号用这把密钥的验证结果
 	for _, a := range accs {
@@ -77,9 +80,12 @@ func TestVerifyKeyWrong(t *testing.T) {
 	if verifyKeyFast(wrong, target.BizDB) {
 		t.Fatal("全 0 密钥竟然通过了验证")
 	}
-	if !verifyKeyFast("da9205a940494db897e7664d126c68faaff472aaff0e4b77aa4a4b6390edde53", target.BizDB) {
+	if !verifyKeyFast(testKey1(), target.BizDB) {
 		t.Logf("已知密钥对 %s 不通过（可能不是该账号的密钥）", target.Wxid)
 	}
 }
 
 var _ = os.Stat
+
+
+

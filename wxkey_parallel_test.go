@@ -29,7 +29,10 @@ func TestParallelOpen(t *testing.T) {
 		t.Skip("找不到已知密钥的账号")
 	}
 
-	const known = "da9205a940494db897e7664d126c68faaff472aaff0e4b77aa4a4b6390edde53"
+	known := testKey1()
+	if known == "" {
+		t.Skip("没设置 WX_TEST_KEY1，跳过")
+	}
 	wrong := "0000000000000000000000000000000000000000000000000000000000000000"
 
 	// 先确认单线程基准
@@ -85,3 +88,6 @@ func TestParallelOpen(t *testing.T) {
 		t.Errorf("错误密钥有 %d 次被误判通过，说明并发下结果不可信", badOK)
 	}
 }
+
+
+

@@ -708,6 +708,21 @@ func startServer() (int, error) {
 			return
 		}
 		msgs, err := db.PeekAllTables(2)
+		if err != nil {
+			db.Close()
+			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		// 反推表名对应的联系人（带缓存，只查没查过的表）
+		seen := map[string]bool{}
+		var todo []string
+		for _, m := range msgs {
+			if m.Table != "" && !seen[m.Table] {
+				seen[m.Table] = true
+				todo = append(todo, m.Table)
+			}
+		}
+		nameMap := resolveTableNames(db, wxid, todo)
 		db.Close()
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
@@ -779,8 +794,16 @@ func startServer() (int, error) {
 			if len(preview) > 120 {
 				preview = preview[:120]
 			}
+			// 自己发的消息标成「我」
+			if from == wxid {
+				from = "我"
+			}
 			if from == "" {
-				from = m.Table
+				if v, ok := nameMap[m.Table]; ok && v != "" {
+					from = v
+				} else {
+					from = m.Table
+				}
 			}
 			rows = append(rows, row{Table: m.Table, LocalID: m.LocalID, Time: m.CreateAt, Preview: preview, From: from})
 		}
@@ -820,6 +843,8 @@ func startServer() (int, error) {
 	go http.Serve(ln, mux)
 	return port, nil
 }
+
+
 
 
 
