@@ -219,8 +219,9 @@ func (m *LiveMonitor) pollOnce() {
 				continue
 			}
 			m.last[t] = raw.LocalID
-			if primed {
-				continue // 首次只记游标
+			// 首次采样只记游标，不推历史；之后（primed=true）才是新消息
+			if !primed {
+				continue
 			}
 			txt, _, _ := DecodeContent(raw.Content)
 			from := ""
@@ -276,6 +277,9 @@ func (m *LiveMonitor) pollOnce() {
 			if len(prev) > 150 {
 				prev = prev[:150]
 			}
+			logInfo("livemsg", "[%s] 新消息 t=%s id=%d %s | %s",
+				m.wxid, time.Unix(raw.CreateAt, 0).Format("15:04:05"),
+				raw.LocalID, from, truncate(prev, 30))
 			fresh = append(fresh, liveMsg{
 				Table: t, From: from, Preview: prev,
 				Time: raw.CreateAt, LocalID: raw.LocalID,

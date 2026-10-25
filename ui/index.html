@@ -203,7 +203,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
       <a data-page="settings"><span class="ic">⚙</span>通知设置</a>
       <a data-page="about"><span class="ic">ⓘ</span>关于</a>
     </div>
-    <div class="side-foot">v1.15</div>
+    <div class="side-foot">v1.16</div>
   </div>
 
   <div class="main">
@@ -479,7 +479,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         <div class="card" style="padding:0">
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">版本号</span>
-            <span style="font-size:14.5px">1.15</span>
+            <span style="font-size:14.5px">1.16</span>
           </div>
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">作者</span>
@@ -830,7 +830,7 @@ function dbgRender(){
   if(!dbgItems.length){
     box.innerHTML = `<div style="text-align:center;padding:120px 0;color:var(--hint);font-size:13px">
       <div style="font-size:30px;margin-bottom:14px">▤</div>
-      点击“开始捕获”后发送或接收一条微信消息</div>`;
+      正在等待新消息…<br><span style="font-size:12px;color:var(--hint)">发一条微信或用手机收款，几秒内会出现在这里</span></div>`;
     return;
   }
   const now = Math.floor(Date.now()/1000);
@@ -961,28 +961,18 @@ async function dbgFetchLive(){
   return byKey;
 }
 
+// 打开弹窗时清空，只等新消息——不显示任何历史
 async function dbgLoadRecent(){
   try{
     dbgBaseline = Math.floor(Date.now()/1000);
-    await dbgLoadNames();
-    const wxids = await dbgWxids();
-    // 只在这一刻读一次公众号历史，之后靠实时接口
-    const hist = await Promise.all(wxids.map(w =>
-      fetch('/api/debug/recent?wxid='+encodeURIComponent(w)).then(x=>x.json()).catch(()=>({}))
-    ));
-    const map = await dbgFetchLive();
-    for(const a of hist){ if(a && a.ok && a.items) a.items.forEach(it=>{
-      const k = (it.time||0)+'|'+(it.display||it.content||'');
-      if(!map.has(k)) map.set(k, it);
-    }); }
-    const all = [...map.values()];
-    all.sort((x,y)=>(y.time||0)-(x.time||0));
-    dbgItems = all.slice(0, 30);
-    $('#dbgCount').textContent = dbgItems.length ? `${dbgItems.length} 条 · 捕获中…` : '等待新消息…';
+    dbgItems = [];
+    $('#dbgCount').textContent = '等待新消息…';
     dbgRender();
+    await dbgLoadNames();
+    await dbgWxids();   // 触发下拉填充
   }catch(e){
-    $('#dbgCount').textContent = '加载失败: ' + (e && e.message ? e.message : e);
-    console.error('dbgLoadRecent', e); reportErr('dbgLoadRecent', e);
+    $('#dbgCount').textContent = '初始化失败: ' + (e && e.message ? e.message : e);
+    reportErr('dbgLoadRecent', e);
   }
 }
 
@@ -1725,6 +1715,7 @@ refreshWx(); refreshLogs(); refreshEnv(); refreshAccounts();
 </script>
 </body>
 </html>
+
 
 
 
