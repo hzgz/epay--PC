@@ -33,3 +33,6 @@ wcdbtest/
 tablemap_*.json
 run.log.old
 nicks_*.json
+integrity.dat
+EasyMonitorPC_obf.exe
+config.json.bak

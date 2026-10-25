@@ -149,17 +149,83 @@ func LoadConfig() error {
 	}
 	cfgMu.Lock()
 	defer cfgMu.Unlock()
-	return json.Unmarshal(b, &cfg)
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return err
+	}
+	decryptConfig(&cfg)
+	return nil
 }
 
 func SaveConfig() error {
 	cfgMu.RLock()
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	// 深拷贝：DbAccounts 是切片，直接赋值只复制了切片头，
+	// 加密会污染内存里的明文
+	c := cfg
+	c.Keywords = append([]string{}, cfg.Keywords...)
+	if cfg.DbAccounts != nil {
+		c.DbAccounts = make([]DbAccount, len(cfg.DbAccounts))
+		copy(c.DbAccounts, cfg.DbAccounts)
+	}
 	cfgMu.RUnlock()
+
+	encryptConfig(&c)
+
+	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
 	return atomicWriteFile(configPath(), b, 0644)
+}
+
+// 敏感字段加解密。
+// 内存里始终是明文（运行时要用），只在读写文件时转换。
+// 老配置是明文，dpapiDecrypt 遇到没有 enc: 前缀的原样返回，自动兼容。
+
+func mustEncrypt(v string) string {
+	if v == "" || isEncrypted(v) {
+		return v
+	}
+	e, err := dpapiEncrypt(v)
+	if err != nil {
+		logWarn("system", "加密配置项失败，将明文保存: %v", err)
+		return v
+	}
+	return e
+}
+
+func mustDecrypt(v string) string {
+	if v == "" || !isEncrypted(v) {
+		return v
+	}
+	d, err := dpapiDecrypt(v)
+	if err != nil {
+		logError("system", "解密配置项失败（可能是换了电脑或系统用户），需要重新填写: %v", err)
+		return ""
+	}
+	return d
+}
+
+func encryptConfig(c *Config) {
+	c.V1Secret = mustEncrypt(c.V1Secret)
+	c.YjkToken = mustEncrypt(c.YjkToken)
+	c.DbKey = mustEncrypt(c.DbKey)
+	for i := range c.DbAccounts {
+		c.DbAccounts[i].Key = mustEncrypt(c.DbAccounts[i].Key)
+	}
+}
+
+func decryptConfig(c *Config) {
+	c.V1Secret = mustDecrypt(c.V1Secret)
+	c.YjkToken = mustDecrypt(c.YjkToken)
+	c.DbKey = mustDecrypt(c.DbKey)
+	migrated := false
+	for i := range c.DbAccounts {
+		if isEncrypted(c.DbAccounts[i].Key) {
+			c.DbAccounts[i].Key = mustDecrypt(c.DbAccounts[i].Key)
+			migrated = true
+		}
+	}
+	_ = migrated
 }
 
 func GetConfig() Config {

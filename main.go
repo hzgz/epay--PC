@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.22"
+	AppVersion = "1.23"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -335,8 +335,19 @@ func (e *Engine) run() {
 }
 
 func main() {
+	// 打包时用：EasyMonitorPC.exe --write-integrity
+	if handleIntegrityCmd(os.Args[1:]) {
+		return
+	}
+
 	// 启动就把可能附带的控制台藏起来，避免黑窗口刷屏
 	hideConsoleWindow()
+
+	// 自校验：发现 exe 被改过就在日志里留痕
+	if ok, why := verifySelfIntegrity(); !ok {
+		logError("system", "⚠ 完整性校验失败：%s", why)
+		logError("system", "⚠ 如果你没有自己修改过程序，请重新下载官方版本")
+	}
 
 	// 只允许一个实例：否则两个进程会同时轮询同一份数据库，
 	// 同一笔收款被上报两次
