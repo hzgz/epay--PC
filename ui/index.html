@@ -203,7 +203,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
       <a data-page="settings"><span class="ic">⚙</span>通知设置</a>
       <a data-page="about"><span class="ic">ⓘ</span>关于</a>
     </div>
-    <div class="side-foot">v1.14</div>
+    <div class="side-foot">v1.15</div>
   </div>
 
   <div class="main">
@@ -252,7 +252,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
             <div class="acct wx">
               <div class="ic">✆</div>
               <div class="bd"><div class="nm">微信账号</div><div class="num" id="aWxNum">0</div>
-                <div class="foot"><span>在线 <b id="aWxOn">0</b></span><span>离线 <b>0</b></span></div></div>
+                <div class="foot"><span>在线 <b id="aWxOn">0</b></span><span>离线 <b id="aWxOff">0</b></span></div></div>
               <div class="right"><span class="badge" id="aWxBadge"><span class="d"></span>未运行</span></div>
             </div>
             <div class="acct ch">
@@ -479,7 +479,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         <div class="card" style="padding:0">
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">版本号</span>
-            <span style="font-size:14.5px">1.14</span>
+            <span style="font-size:14.5px">1.15</span>
           </div>
           <div style="padding:15px 18px;border-bottom:1px solid var(--line);display:flex">
             <span style="width:110px;font-size:14px;color:var(--sub)">作者</span>
@@ -536,15 +536,17 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         <span id="dbgClose" style="cursor:pointer;color:var(--sub);font-size:18px">✕</span>
       </div>
       <div style="font-size:12.5px;color:var(--sub);margin-top:6px">
-        点「开始捕获」立刻载入最近 8 条做参考（标灰，带时间差），之后新到的会打上绿色「实时」标记，最多保留 20 条。好友 / 群聊点「扫好友群聊」。
+        打开即自动捕获。新消息打绿色「实时」标签，顶部显示最后刷新时刻。
       </div>
     </div>
-    <div style="padding:12px 22px;display:flex;align-items:center;gap:10px">
-      <span class="badge" id="dbgBadge"><span class="d"></span>捕获已停止</span>
-      <span id="dbgLast" style="font-size:11.5px;color:var(--hint)"></span>
-      <span style="font-size:13px" id="dbgCount">0 / 20 条</span>
+    <div style="padding:10px 22px;display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow:hidden">
+      <span class="badge" id="dbgBadge" style="white-space:nowrap;flex-shrink:0"><span class="d"></span>捕获已停止</span>
+      <select id="dbgAcct" style="font-size:12.5px;padding:3px 6px;border:1px solid var(--line);
+        border-radius:6px;background:#fff;color:var(--text);max-width:240px;flex-shrink:0"></select>
+      <span style="font-size:13px;white-space:nowrap;flex-shrink:0" id="dbgCount">0 条</span>
+      <span id="dbgLast" style="font-size:11.5px;color:var(--hint);white-space:nowrap;flex-shrink:0"></span>
       <span style="flex:1"></span>
-      <span style="font-size:11.5px;color:var(--hint)">调试时可能包含账号和消息内容，复制后请妥善处理。</span>
+      <span style="font-size:11.5px;color:var(--hint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">可能含账号和消息内容</span>
     </div>
     <div style="flex:1;margin:0 22px;border:1px solid var(--line);border-radius:9px;overflow:auto;background:#FAFBFC">
       <div id="dbgList" style="padding:8px"></div>
@@ -746,8 +748,11 @@ async function refresh(){
     $('#kAllCnt').textContent = (s.reported||0)+(s.failed||0);
 
     // 账户状态
-    $('#aWxNum').textContent = s.attached?1:0;
-    $('#aWxOn').textContent = s.attached?1:0;
+    const wxList = s.wx_accounts || [];
+    const wxOn = wxList.filter(x=>x.running).length;
+    $('#aWxNum').textContent = wxList.length;
+    $('#aWxOn').textContent = wxOn;
+    const offEl = $('#aWxOff'); if(offEl) offEl.textContent = wxList.length - wxOn;
     const wb=$('#aWxBadge');
     wb.className='badge'+(s.attached?' on':''); wb.innerHTML=`<span class="d"></span>${s.attached?'运行中':'未运行'}`;
 
@@ -862,12 +867,67 @@ function dbgRender(){
 }
 
 // dbgLoadRecent 立刻拉最近的公众号消息（不等新消息）
-// 所有正在监控的账号
+// 当前要看的账号：下拉选中优先，否则用全部在跑的
 async function dbgWxids(){
   try{
     const s = await (await fetch('/api/status')).json();
-    return (s.wx_accounts || []).filter(x=>x.running).map(x=>x.wxid);
+    const all = (s.wx_accounts || []).filter(x=>x.running).map(x=>x.wxid);
+    dbgFillAcctSelect(all);
+    const sel = document.getElementById('dbgAcct');
+    const pick = sel && sel.value;
+    if(pick && pick !== '__all__') return [pick];
+    return all;
   }catch(e){ return []; }
+}
+
+// 填充账号下拉，保持用户已选的值
+function dbgFillAcctSelect(wxids){
+  const sel = document.getElementById('dbgAcct');
+  if(!sel) return;
+  const cur = sel.value;
+  const want = ['__all__'].concat(wxids);
+  const have = [...sel.options].map(o=>o.value);
+  if(want.length === have.length && want.every((v,i)=>v===have[i])) return;
+  sel.innerHTML = '';
+  const o0 = document.createElement('option');
+  o0.value = '__all__'; o0.textContent = '全部账号（' + wxids.length + '）';
+  sel.appendChild(o0);
+  for(const w of wxids){
+    const o = document.createElement('option');
+    o.value = w;
+    o.textContent = (dbgAcctName(w) || w) + '  ·  ' + w;
+    sel.appendChild(o);
+  }
+  // 恢复之前的选择，没了就回到全部
+  if(cur && want.includes(cur)) sel.value = cur;
+  else sel.value = '__all__';
+}
+
+// 账号显示名：优先昵称
+let dbgNames = {};
+function dbgAcctName(wxid){
+  return dbgNames[wxid] || wxid;
+}
+async function dbgLoadNames(){
+  try{
+    const arr = await (await fetch('/api/accounts')).json();
+    (arr||[]).forEach(a => { if(a.wxid) dbgNames[a.wxid] = a.nick || a.wxid; });
+  }catch(e){}
+}
+
+// 切换账号时清空重来（绑定在 dbgOpenModal 里做）
+function dbgBindAcctSelect(){
+  const sel = document.getElementById('dbgAcct');
+  if(!sel || sel.__bound) return;
+  sel.__bound = true;
+  sel.onchange = async ()=>{
+    dbgItems = [];
+    dbgBaseline = Math.floor(Date.now()/1000);
+    $('#dbgCount').textContent = '切换账号，加载中…';
+    dbgRender();
+    await dbgLoadNames();
+    await dbgLoadRecent();
+  };
 }
 
 // 只拉实时数据（轮询用）。
@@ -904,6 +964,7 @@ async function dbgFetchLive(){
 async function dbgLoadRecent(){
   try{
     dbgBaseline = Math.floor(Date.now()/1000);
+    await dbgLoadNames();
     const wxids = await dbgWxids();
     // 只在这一刻读一次公众号历史，之后靠实时接口
     const hist = await Promise.all(wxids.map(w =>
@@ -958,12 +1019,29 @@ async function dbgScanFriends(){
   btn.textContent = '扫描中…';
   btn.disabled = true;
   try{
-    const s = await (await fetch('/api/status')).json();
-    let wxid = '';
-    (s.wx_accounts || []).forEach(x => { if(!wxid && x.running) wxid = x.wxid; });
-    const r = await (await fetch('/api/debug/scan?wxid='+encodeURIComponent(wxid))).json();
-    if(!r.ok){ alert('扫描失败: ' + (r.err||'未知错误')); return; }
-    dbgItems = (r.rows||[]).map((x,i)=>({
+    // 扫描跟随账号下拉：选「全部」就扫所有在跑的账号
+    const wxids = await dbgWxids();
+    const bags = await Promise.all(wxids.map(w =>
+      fetch('/api/debug/scan?wxid='+encodeURIComponent(w)).then(r=>r.json()).catch(()=>({}))
+    ));
+    const seenScan = new Set();
+    const rows = [];
+    for(const r of bags){
+      if(!r || !r.ok) continue;
+      for(const x of (r.rows||[])){
+        const k = (x.time||0)+'|'+(x.preview||'');
+        if(seenScan.has(k)) continue;
+        seenScan.add(k);
+        rows.push(x);
+      }
+    }
+    if(!rows.length){
+      const errs = bags.map(b=>b&&b.err).filter(Boolean).join('; ');
+      alert('扫描失败: ' + (errs || '没有读到消息'));
+      return;
+    }
+    rows.sort((a,b)=>(b.time||0)-(a.time||0));
+    dbgItems = rows.map((x,i)=>({
       seq: i+1,
       from: x.from || x.table.slice(0,16),
       to: '',
@@ -1000,6 +1078,7 @@ function dbgCurJSON(){
 function dbgOpenModal(){
   $('#dbgMask').style.display='flex';
   dbgOpen=true;
+  dbgBindAcctSelect();
   // 打开就自动开始捕获，不用用户再点一次
   if(!dbgRun){ setTimeout(()=>{ document.getElementById('dbgToggle').click(); }, 120); }
   // 未开始捕获时不拉取任何数据，界面保持空白提示
@@ -1028,13 +1107,13 @@ $('#dbgToggle').onclick = async ()=>{
     if(dbgTimer){ clearInterval(dbgTimer); dbgTimer=null; }
     // 停止后清空展示，避免残留上一次的内容
     dbgItems = [];
-    $('#dbgCount').textContent = '0 / 20 条';
+    $('#dbgCount').textContent = '0 条';
     const lt2 = $('#dbgLast'); if(lt2) lt2.textContent = '';
     dbgRender();
   }
 };
 
-$('#dbgClear').onclick = ()=>{ dbgItems=[]; $('#dbgCount').textContent='0 / 20 条'; dbgRender(); };
+$('#dbgClear').onclick = ()=>{ dbgItems=[]; $('#dbgCount').textContent='0 条'; dbgRender(); };
 
 function copyText(t){
   if(!t){ toast('没有内容'); return; }
@@ -1646,6 +1725,7 @@ refreshWx(); refreshLogs(); refreshEnv(); refreshAccounts();
 </script>
 </body>
 </html>
+
 
 
 

@@ -114,7 +114,7 @@ var (
 	liveMons  = map[string]*LiveMonitor{} // wxid -> monitor
 )
 
-const liveKeep = 20
+const liveKeep = 40
 
 // StartLiveMonitor 开始轮询某个账号的 message_0.db
 func StartLiveMonitor(wxid, dbPath, keyHex string) error {
@@ -179,7 +179,7 @@ func (m *LiveMonitor) Stop() {
 func (m *LiveMonitor) loop() {
 	// 5 秒一轮：message_0.db 有一百多张表，全扫一次要 1-2 秒，
 	// 再快会挤占资源
-	t := time.NewTicker(5 * time.Second)
+	t := time.NewTicker(3 * time.Second)
 	defer t.Stop()
 	m.pollOnce() // 首次立刻采样
 	for {
@@ -289,8 +289,8 @@ func (m *LiveMonitor) pollOnce() {
 	defer m.mu.Unlock()
 	if !primed {
 		// 首次采样：只留最新的 8 条做参考（fresh 已按时间倒序，取头部）
-		if len(fresh) > 8 {
-			fresh = fresh[:8]
+		if len(fresh) > 20 {
+			fresh = fresh[:20]
 		}
 		m.events = append(fresh, m.events...)
 		if len(m.events) > liveKeep {
@@ -327,6 +327,7 @@ func LiveSnapshot(wxid string) []liveMsg {
 	}
 	return m.Snapshot()
 }
+
 
 
 
