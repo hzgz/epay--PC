@@ -91,6 +91,11 @@ var (
 
 // detectWeChatExe 探测本机微信安装路径（只读注册表和常见目录）
 func detectWeChatExe() string {
+	// 最可靠：微信正在运行时，直接问进程要 exe 路径。
+	// 换设备、换安装盘符都能命中。
+	if p := wechatExeFromProcess(); p != "" {
+		return p
+	}
 	home, _ := os.UserHomeDir()
 	candidates := []string{
 		`D:\Weixin\Weixin.exe`,

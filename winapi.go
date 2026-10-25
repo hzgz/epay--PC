@@ -24,12 +24,14 @@ var (
 	procGetModuleHandle    = kernel32.NewProc("GetModuleHandleW")
 	procCreateThread       = kernel32.NewProc("CreateThread")
 	procSleep              = kernel32.NewProc("Sleep")
+	procQueryFullProcessImageNameW = kernel32.NewProc("QueryFullProcessImageNameW")
 )
 
 const (
 	PROCESS_ALL_ACCESS     = 0x1F0FFF
 	PROCESS_VM_READ        = 0x0010
 	PROCESS_QUERY_INFO     = 0x0400
+	PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 	MEM_COMMIT_RESERVE     = 0x3000
 	PAGE_READWRITE         = 0x04
 	PAGE_EXECUTE_READWRITE = 0x40
@@ -176,4 +178,29 @@ func (h Handle) FindModuleBase(dllName string) (uintptr, uint32, error) {
 }
 
 func Sleep(ms int) { procSleep.Call(uintptr(ms)) }
+
+
+// wechatExeFromProcess 通过运行中的微信进程拿 exe 完整路径。
+// 比猜安装目录可靠得多——换设备、装到别的盘都能找到。
+func wechatExeFromProcess() string {
+	for _, pid := range PidsByName("Weixin.exe") {
+		h, err := syscall.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+		if err != nil {
+			continue
+		}
+		buf := make([]uint16, syscall.MAX_PATH)
+		size := uint32(len(buf))
+		r, _, _ := procQueryFullProcessImageNameW.Call(
+			uintptr(h),
+			0,
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(unsafe.Pointer(&size)),
+		)
+		syscall.CloseHandle(h)
+		if r != 0 && size > 0 {
+			return syscall.UTF16ToString(buf[:size])
+		}
+	}
+	return ""
+}
 

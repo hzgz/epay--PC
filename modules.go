@@ -12,6 +12,7 @@ var (
 	psapi                    = syscall.NewLazyDLL("psapi.dll")
 	procEnumProcessModulesEx = psapi.NewProc("EnumProcessModulesEx")
 	procGetModuleBaseNameW   = psapi.NewProc("GetModuleBaseNameW")
+	procGetModuleFileNameExW  = psapi.NewProc("GetModuleFileNameExW")
 	procGetModuleInformation = psapi.NewProc("GetModuleInformation")
 )
 
@@ -55,4 +56,30 @@ func findModule(pid uint32, dllName string) (uintptr, uint32, error) {
 func processHasModule(pid uint32, dllName string) bool {
 	_, _, err := findModule(pid, dllName)
 	return err == nil
+}
+
+// findModulePath 从进程的模块列表里取某个 DLL 的完整磁盘路径。
+// 比从 exe 路径推导可靠：微信装在哪、DLL 放在哪个子目录都能拿到。
+func findModulePath(pid uint32, dllName string) string {
+	base, _, err := findModule(pid, dllName)
+	if err != nil || base == 0 {
+		return ""
+	}
+	h, err := OpenProcess(pid, PROCESS_VM_READ|PROCESS_QUERY_INFO)
+	if err != nil {
+		return ""
+	}
+	defer h.Close()
+
+	buf := make([]uint16, syscall.MAX_LONG_PATH)
+	n, _, _ := procGetModuleFileNameExW.Call(
+		uintptr(h),
+		uintptr(base),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)),
+	)
+	if n == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buf[:n])
 }

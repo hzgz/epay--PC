@@ -204,8 +204,11 @@ func scanStringCandidates(pid uint32, h Handle) []keyCandidate {
 					if sz != 32 {
 						continue
 					}
+					// capacity：MSVC 对 32 字节字符串通常分配 47，
+					// 但不同编译器/版本可能不同，放宽到 33..64。
+					// 放宽只影响候选数量，最终由 HMAC 验证兜底，不会误判。
 					cp := binary.LittleEndian.Uint64(buf[i+24:])
-					if cp != 47 {
+					if cp < 33 || cp > 64 {
 						continue
 					}
 					// 第二 qword 为 0 这个条件能把候选砍掉一大半
@@ -270,7 +273,18 @@ func extractKeyByScan(weixinExe, targetWxid string) KeyResult {
 		}
 		return ""
 	}
-	dllPath := findDLL(weixinExe)
+	// 优先从运行中的微信进程模块列表取 Weixin.dll 的真实路径，
+	// 换设备/改安装目录后照样能命中；拿不到再退回从 exe 路径推导。
+	dllPath := ""
+	for _, pid := range PidsByName(WeChatProc) {
+		if p := findModulePath(pid, "Weixin.dll"); p != "" {
+			dllPath = p
+			break
+		}
+	}
+	if dllPath == "" {
+		dllPath = findDLL(weixinExe)
+	}
 	if dllPath == "" {
 		dllPath = findDLL(detectWeChatExe())
 	}

@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.17"
+	AppVersion = "1.18"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -343,7 +343,15 @@ func main() {
 	}
 	c := GetConfig()
 	// 首次运行：自动探测微信安装路径并落盘，用户不用手填
-	if c.WeChatExe == "" {
+	// 路径为空、或文件已不存在（换设备/微信重装后路径会变），都重新探测
+	needDetect := c.WeChatExe == ""
+	if !needDetect {
+		if st, err := os.Stat(c.WeChatExe); err != nil || st.IsDir() {
+			needDetect = true
+			logWarn("system", "配置里的微信路径已失效（%s），重新探测", c.WeChatExe)
+		}
+	}
+	if needDetect {
 		if p := detectWeChatExe(); p != "" {
 			c.WeChatExe = p
 			SetConfig(c)
@@ -453,6 +461,7 @@ func main() {
 	}
 	runWindow(port)
 }
+
 
 
 
