@@ -345,6 +345,10 @@ func xpayHeartbeatRound() {
 			have[a.Wxid] = true
 		}
 		for _, h := range GetConfig().EffectiveHookAccounts() {
+			// 账号在线才发心跳：进程已退出就不发
+			if h.PID != 0 && !pidAlive(uint32(h.PID)) {
+				continue
+			}
 			if h.Enabled && !have[h.Wxid] {
 				accs = append(accs, Account{
 					Type: "wechat", Wxid: h.Wxid,
@@ -365,13 +369,9 @@ func xpayHeartbeatRound() {
 				short(a.Wxid), a.ChannelID)
 			continue
 		}
+		// 账号只要添加并在线就发心跳，不要求先绑通道：
+		// 通道为空也照发（平台会返回明确错误，界面上能看到原因）
 		cid := a.ChannelFor("xpay")
-		if cid == "" {
-			// 没绑通道就发心跳，等于给平台发一个空通道号：
-			// 轻则 400，重则可能被当成默认通道，把状态记到别人头上。
-			logWarn("xpay", "账号 %s 未绑定通道 ID，跳过心跳", short(a.Wxid))
-			continue
-		}
 		if err := xpayHeartbeat(c, name, cid); err != nil {
 			logWarn("xpay", "账号 %s 心跳失败（通道 %s）：%v", short(a.Wxid), cid, err)
 			markAccountHeartbeat(a.Wxid, false, err.Error())
