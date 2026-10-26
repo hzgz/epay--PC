@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.65"
+	AppVersion = "1.66"
 	WeChatProc = "Weixin.exe"
 )
 

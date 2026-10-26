@@ -6,6 +6,8 @@ package main
 //   - 注入失败只记日志，不影响程序其它功能。
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"unsafe"
@@ -51,7 +53,40 @@ func hookDLLPath() string {
 }
 
 // injectDLL 用 LoadLibraryW 远程线程把 DLL 注入目标进程
+// verifyDLL 注入前校验 DLL 哈希：随包发布时带 .sha256 旁文件，
+// 不匹配就拒绝注入，避免把改坏的/被替换的组件送进微信进程。
+func verifyDLL(path string) error {
+	sumFile := strings.TrimSuffix(path, filepath.Ext(path)) + ".sha256"
+	want, err := os.ReadFile(sumFile)
+	if err != nil {
+		// 开发环境没有旁文件：允许，但记一条
+		logWarn("hook", "消息组件没有校验文件，按开发模式注入")
+		return nil
+	}
+	expect := strings.ToLower(strings.TrimSpace(string(want)))
+	if i := strings.IndexByte(expect, ' '); i > 0 {
+		expect = expect[:i]
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("打开消息组件失败: %w", err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("读取消息组件失败: %w", err)
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if got != expect {
+		return fmt.Errorf("消息组件校验失败（期望 %s，实际 %s）", expect[:12], got[:12])
+	}
+	return nil
+}
+
 func injectDLL(pid uint32, dllPath string) error {
+	if err := verifyDLL(dllPath); err != nil {
+		return err
+	}
 	k32 := windows.NewLazySystemDLL("kernel32.dll")
 	pOpen := k32.NewProc("OpenProcess")
 	pAlloc := k32.NewProc("VirtualAllocEx")
