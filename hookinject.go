@@ -32,11 +32,9 @@ func hookDLLPath() string {
 	if err == nil {
 		base = filepath.Dir(exe)
 	}
-	cands := []string{
-		filepath.Join(base, "native", "easymon_hook.dll"),
-		filepath.Join(base, "native", "easymon_hook3.dll"),
-		filepath.Join(base, "native", "easymon_hook2.dll"),
-	}
+	// 目录里所有 easymon_hook*.dll 都参与选择，取最新的
+	matches, _ := filepath.Glob(filepath.Join(base, "native", "easymon_hook*.dll"))
+	cands := matches
 	// 取最新的一个：换版本时直接丢新文件进 native 目录即可，不用改名
 	best := ""
 	var bestTime time.Time
@@ -112,7 +110,7 @@ func injectDLL(pid uint32, dllPath string) error {
 	return nil
 }
 
-// startHookWatcher 看护微信进程：没有注入就注入，换进程就重注
+// startHookWatcher 看护微信进程：没有注入就注入，换进程就重注；多开时逐个接管
 func startHookWatcher() {
 	hookWatchMu.Lock()
 	if hookWatchStop != nil {
@@ -134,12 +132,8 @@ func startHookWatcher() {
 				if GetConfig().EffectiveWxMode() != "hook" {
 					continue
 				}
-				pids := MainPidsOf(WeChatProc)
+				pids := MainWeChatPids()
 				if len(pids) == 0 {
-					continue
-				}
-				pid := pids[0]
-				if pid == injectedPid {
 					continue
 				}
 				dll := hookDLLPath()
@@ -147,37 +141,32 @@ func startHookWatcher() {
 					logWarn("hook", "缺少消息组件，请重新安装本程序")
 					continue
 				}
-				// 已经加载过就别重复注入（重复注入不会重跑 DllMain，也不会重新挂钩）
-				if moduleLoaded(pid, "easymon_hook") {
-					injectedPid = pid
-					ensureHookAccountForPid(pid) // 账号去重/改名仍要跑
-					continue
-				}
-				before := hookLogSize()
-				if err := injectDLL(pid, dll); err != nil {
-					logError("hook", "接入微信失败（%d）：%v", pid, err)
-					continue
-				}
-				// 注入成功 ≠ 挂钩成功：微信升级后序言可能变了，DLL 会拒绝挂钩。
-				// 这里看 DLL 日志确认真的挂上了，避免界面显示"已连接"其实收不到消息。
-				time.Sleep(600 * time.Millisecond)
-				if !hookLogHasSince(before, "hook 已安装") {
-					if hookLogHasSince(before, "序言不匹配") {
-						logError("hook", "消息组件未就绪：微信版本可能已更新（%d）", pid)
-					} else {
-						logWarn("hook", "消息组件尚未确认就绪（%d）", pid)
+				// 每个实例打开的是自己的账号目录，据此得到 pid -> wxid
+				wxidOf := WxidForPids(pids)
+				// 目标 DLL 文件名：进程里加载的不是这一个就重挂
+				wantDLL := strings.ToLower(filepath.Base(dll))
+				for _, pid := range pids {
+					if !loadedHookModule(pid, wantDLL) {
+						before := hookLogSize()
+						if err := injectDLL(pid, dll); err != nil {
+							logError("hook", "接入微信失败（%d）：%v", pid, err)
+							continue
+						}
+						time.Sleep(600 * time.Millisecond)
+						if !hookLogHasSince(before, "hook 已安装") && !hookLogHasSince(before, "序言不匹配") {
+							logWarn("hook", "消息组件尚未确认就绪（%d）", pid)
+						}
+						logInfo("hook", "已连接微信进程 %d", pid)
 					}
+					injectedPid = pid
+					ensureHookAccountForPid(pid, wxidOf[pid])
 				}
-				injectedPid = pid
-				logInfo("hook", "已连接微信进程 %d", pid)
-				ensureHookAccountForPid(pid)
+				pruneDeadHookAccounts(pids)
 			}
 		}
 	}()
 }
 
-// ensureHookAccountForPid 微信换了进程后，把 Hook 账号自动换成新 PID，
-// 并清掉已经不存在的旧 PID 账号，避免账号列表越积越多。
 // singleWxidFromDisk 从微信数据目录推出当前登录的 wxid。
 // 目录名形如 wxid_xxx_5d71，活跃账号的 db_storage 最近被写过，按修改时间取最新的那个。
 func singleWxidFromDisk() string {
@@ -228,97 +217,78 @@ func singleWxidFromDisk() string {
 	return best.name
 }
 
-func ensureHookAccountForPid(pid uint32) {
+func ensureHookAccountForPid(pid uint32, knownWxid string) {
 	pidInt := int(pid)
 	c := GetConfig()
 	accounts := c.HookAccounts
-	changed := false
+	wxid := knownWxid
+	if wxid == "" && len(MainWeChatPids()) <= 1 {
+		wxid = singleWxidFromDisk()
+	}
+
 	kept := make([]HookAccount, 0, len(accounts)+1)
-	has := false
+	done := false
+	changed := false
 	for _, a := range accounts {
 		if a.PID == pidInt {
-			has = true
-			kept = append(kept, a)
-			continue
-		}
-		if a.PID != 0 && len(PidsByName(WeChatProc)) > 0 {
-			if processAlive(uint32(a.PID)) {
-				kept = append(kept, a)
+			if done {
+				changed = true // 同 PID 重复项，丢掉
 				continue
 			}
-		}
-		changed = true // 旧进程已退出，丢弃
-	}
-	// 账号名尽量用真实 wxid，界面上"接收者"才不会显示成 pid:xxxx
-	if wx := singleWxidFromDisk(); wx != "" {
-		for i := range kept {
-			if kept[i].PID == pidInt && kept[i].Wxid != wx {
-				kept[i].Wxid = wx
+			if wxid != "" && a.Wxid != wxid {
+				a.Wxid = wxid
 				changed = true
 			}
+			kept = append(kept, a)
+			done = true
+			continue
 		}
+		if wxid != "" && a.Wxid == wxid {
+			if done {
+				changed = true
+				continue
+			}
+			// 同一个账号换了进程：更新 PID，保留通道号
+			if a.PID != pidInt {
+				a.PID = pidInt
+				changed = true
+			}
+			kept = append(kept, a)
+			done = true
+			continue
+		}
+		kept = append(kept, a)
 	}
-	if !has {
-		// 用户主动删光了账号就不再加回来，否则账号删不干净、也切不回密钥模式
-		if c.HookNoAutoBind && len(kept) == 0 {
+
+	// 账号身份：单实例用 wxid，多开用 pid；同一 PID 只保留一条
+	if !done {
+		if c.HookNoAutoBind && len(accounts) == 0 {
 			return
 		}
-		// 新建账号时继承任意已有账号的通道号，避免换进程后通道丢失
-		ch := ""
-		for _, a := range append(kept, accounts...) {
-			if a.ChannelID != "" {
-				ch = a.ChannelID
-				break
-			}
-		}
-		name := singleWxidFromDisk()
+		name := wxid
 		if name == "" {
 			name = fmt.Sprintf("pid:%d", pid)
 		}
-		kept = append(kept, HookAccount{
-			Wxid: name, PID: pidInt, ChannelID: ch, Enabled: true,
-		})
+		// 新账号不继承别人的通道号：两个账号共用一个通道会导致上报串账。
+		// 同一 wxid 换 PID 的情况在下面单独处理（那才需要沿用）。
+		ch := ""
+		kept = append(kept, HookAccount{Wxid: name, PID: pidInt, ChannelID: ch, Enabled: true})
 		changed = true
 		logInfo("hook", "已自动绑定当前微信进程 pid=%d", pid)
 	}
-	// 同一 PID 只留一个账号
-	dedup := make([]HookAccount, 0, len(kept))
-	seen := map[int]bool{}
-	for _, a := range kept {
-		if a.PID != 0 && seen[a.PID] {
-			continue
-		}
-		seen[a.PID] = true
-		dedup = append(dedup, a)
-	}
-	if len(dedup) != len(kept) {
-		kept = dedup
-		changed = true
-	}
-	if changed {
-		c.HookAccounts = kept
-		if err := SetConfig(c); err != nil {
-			logWarn("hook", "更新账号失败：%v", err)
-		}
-		// 账号刚就绪就发一轮心跳，不等 60 秒周期
-		if strings.TrimSpace(c.Mode) == "xpay" {
-			ensureXPayHeartbeat()
-			go xpayHeartbeatRound()
-		}
-	}
-}
 
-func processAlive(pid uint32) bool {
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-	if err != nil {
-		return false
+	if !changed {
+		return
 	}
-	defer windows.CloseHandle(h)
-	var code uint32
-	if err := windows.GetExitCodeProcess(h, &code); err != nil {
-		return false
+	c.HookAccounts = kept
+	if err := SetConfig(c); err != nil {
+		logWarn("hook", "更新账号失败：%v", err)
+		return
 	}
-	return code == 259 // STILL_ACTIVE
+	if strings.TrimSpace(c.Mode) == "xpay" {
+		ensureXPayHeartbeat()
+		go xpayHeartbeatRound()
+	}
 }
 
 // stopHookWatcher 停止看护
@@ -330,6 +300,22 @@ func stopHookWatcher() {
 	}
 	injectedPid = 0
 	hookWatchMu.Unlock()
+}
+
+// loadedHookModule 目标进程里是否已加载指定文件名的 hook 模块
+// （进程里可能残留旧版本，只认目标版本，避免反复注入）
+func loadedHookModule(pid uint32, want string) bool {
+	mods, err := snapshotModules(pid)
+	if err != nil {
+		return false
+	}
+	want = strings.ToLower(want)
+	for _, n := range mods {
+		if strings.ToLower(n) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // moduleLoaded 目标进程里是否已加载某个名字的模块（按前缀匹配，兼容带版本后缀的 dll）
@@ -396,4 +382,68 @@ func HookDLLInfo() map[string]any {
 		"injected_pid": injectedPid,
 		"exists":       strings.TrimSpace(p) != "",
 	}
+}
+
+// pruneDeadHookAccounts 清掉进程已经不在的账号（微信退出/实例关闭）。
+// 用户手动"停止"的账号进程通常还在，不会被清掉。
+func pruneDeadHookAccounts(alivePids []uint32) {
+	alive := make(map[int]bool, len(alivePids))
+	for _, p := range alivePids {
+		alive[int(p)] = true
+	}
+	c := GetConfig()
+	kept := make([]HookAccount, 0, len(c.HookAccounts))
+	changed := false
+	for _, a := range c.HookAccounts {
+		if a.PID != 0 && !alive[a.PID] && !pidAlive(uint32(a.PID)) {
+			changed = true
+			continue
+		}
+		kept = append(kept, a)
+	}
+	if !changed {
+		return
+	}
+	c.HookAccounts = kept
+	if err := SetConfig(c); err != nil {
+		logWarn("hook", "清理失效账号失败：%v", err)
+		return
+	}
+	logInfo("hook", "已清理已退出的微信账号")
+}
+
+// pidAlive 进程是否还活着
+func pidAlive(pid uint32) bool {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+	var code uint32
+	if err := windows.GetExitCodeProcess(h, &code); err != nil {
+		return false
+	}
+	return code == 259 // STILL_ACTIVE
+}
+
+// snapshotModules 列出目标进程已加载的模块名
+func snapshotModules(pid uint32) ([]string, error) {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPMODULE|windows.TH32CS_SNAPMODULE32, pid)
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CloseHandle(snap)
+	var me windows.ModuleEntry32
+	me.Size = uint32(unsafe.Sizeof(me))
+	var out []string
+	if err := windows.Module32First(snap, &me); err != nil {
+		return nil, err
+	}
+	for {
+		out = append(out, windows.UTF16ToString(me.Module[:]))
+		if err := windows.Module32Next(snap, &me); err != nil {
+			break
+		}
+	}
+	return out, nil
 }

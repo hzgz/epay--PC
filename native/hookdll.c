@@ -315,7 +315,14 @@ static void capture(const char *buf, size_t len) {
         }
     }
     if (run && runLen > bestLen) { best = run; bestLen = runLen; }
-    if (best && bestLen >= 2) send_payload(1, "", best, bestLen);
+    // 真正的聊天文字是 "昵称 : 正文"；没有这个分隔符的多半是二进制里的可打印片段
+    if (best && bestLen >= 4) {
+        int hasSep = 0;
+        for (size_t i = 0; i + 3 <= bestLen; i++) {
+            if (best[i] == ' ' && best[i + 1] == ':' && best[i + 2] == ' ') { hasSep = 1; break; }
+        }
+        if (hasSep) send_payload(1, "", best, bestLen);
+    }
 }
 
 static int is_readable(const void *p, size_t len) {

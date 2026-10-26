@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"os/exec"
 	"path/filepath"
 	"os"
 	"regexp"
@@ -22,7 +23,8 @@ var uiHTML []byte
 
 type StatusResp struct {
 	Attached      bool   `json:"attached"` // 数据库/日志监控是否在跑
-	Live          bool   `json:"live"`     // 当前模式是否在工作（key=attached，hook=接收端+注入）
+	Live          bool   `json:"live"`
+	HookAccounts  int    `json:"hook_accounts"`     // 当前模式是否在工作（key=attached，hook=接收端+注入）
 	Pid           uint32 `json:"pid"`
 	WechatRunning bool   `json:"wechat_running"`
 	Scanned       int    `json:"scanned"`
@@ -163,6 +165,7 @@ func (e *Engine) snapshot() StatusResp {
 		WxMode: GetConfig().EffectiveWxMode(),
 		Attached:      live,
 		Live:          live || (GetConfig().EffectiveWxMode() == "hook" && hookRunning()),
+		HookAccounts:  len(GetConfig().EffectiveHookAccounts()),
 
 		Pid:           pid,
 		WechatRunning: PidByName(WeChatProc) != 0,
@@ -265,6 +268,16 @@ func (e *Engine) addUnknown(buf []byte) {
 }
 
 func (e *Engine) addDebug(m *ChatMsg, rawLen int) {
+	e.addDebugFrom(m, rawLen, "hook")
+}
+
+// addDebugFrom src: "hook" = 实时推送；"db" = 数据库监听
+// 两者的过滤规则完全不同，调试页按来源分开，避免数据库的缓存串混进实时调试
+func (e *Engine) addDebugFrom(m *ChatMsg, rawLen int, src string) {
+	mode := GetConfig().EffectiveWxMode()
+	if src == "db" {
+		mode = "db"
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	head := ""
@@ -277,7 +290,7 @@ func (e *Engine) addDebug(m *ChatMsg, rawLen int) {
 	}
 	e.debugSeq++
 	it := DebugItem{
-		Mode: GetConfig().EffectiveWxMode(),
+		Mode:   mode,
 		PayType: ExtractPayType(m.Display),
 		Seq: e.debugSeq, From: m.From, To: m.To, Content: m.Content,
 		Display: m.Display, Time: m.Time, MsgID: m.MsgID, Amount: m.Amount,
@@ -406,8 +419,17 @@ func startServer() (int, error) {
 			if want != "all" {
 				keep := make([]MsgView, 0, len(items))
 				for _, v := range items {
-					if v.WxMode == "" || v.WxMode == want || v.WxMode == "alipay" {
+					switch v.WxMode {
+					case "", "alipay":
 						keep = append(keep, v)
+					case "db":
+						if want == "key" {
+							keep = append(keep, v)
+						}
+					default:
+						if v.WxMode == want {
+							keep = append(keep, v)
+						}
 					}
 				}
 				items = keep
@@ -1258,12 +1280,47 @@ func startServer() (int, error) {
 			keys = append(keys, a.Wxid)
 		}
 		hooks := c.HookAccounts // 停止的账号也要返回，界面才能显示并重新启动
+	type hookView struct {
+		HookAccount
+		Online bool `json:"online"`
+	}
+	hookViews := make([]hookView, 0, len(hooks))
+	for _, a := range hooks {
+		hookViews = append(hookViews, hookView{HookAccount: a, Online: a.PID != 0 && moduleLoaded(uint32(a.PID), "easymon_hook")})
+	}
 		out := map[string]any{
 			"mode": c.EffectiveWxMode(), "key_accounts": keys,
-			"hook_accounts": hooks, "hook": hookStateSnapshot(), "dll": HookDLLInfo(),
+			"hook_accounts": hookViews, "hook": hookStateSnapshot(), "dll": HookDLLInfo(),
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(out)
+	})
+
+	// 启动一个微信实例，给"新增账号"用
+	mux.HandleFunc("/api/wx/launch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		exe := strings.TrimSpace(GetConfig().WeChatExe)
+		if exe == "" {
+			exe = `D:\Weixin\Weixin.exe`
+		}
+		if _, err := os.Stat(exe); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "找不到微信程序：" + exe})
+			return
+		}
+		cmd := exec.Command(exe)
+		cmd.Dir = filepath.Dir(exe)
+		if err := cmd.Start(); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		logInfo("hook", "已启动微信客户端（用于登录新账号）")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 
 	mux.HandleFunc("/api/wx/hook/account", func(w http.ResponseWriter, r *http.Request) {
@@ -1506,10 +1563,8 @@ func startServer() (int, error) {
 			bound[a.PID] = true
 		}
 		list := make([]item, 0, 4)
-		var pids []uint32
-		if main := MainWeChatPid(); main != 0 {
-			pids = []uint32{main}   // 只列主窗口进程，避免一堆渲染子进程
-		} else {
+		pids := MainWeChatPids()   // 双开时会有多个
+		if len(pids) == 0 {
 			pids = MainPidsOf(WeChatProc)
 		}
 		for _, p := range pids {

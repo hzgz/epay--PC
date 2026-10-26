@@ -84,3 +84,31 @@ func MainWeChatPid() uint32 {
 	procEnumWindows.Call(cb, 0)
 	return found
 }
+
+// MainWeChatPids 所有微信主窗口的进程（双开时会有多个）
+func MainWeChatPids() []uint32 {
+	var out []uint32
+	seen := map[uint32]bool{}
+	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+		var buf [128]uint16
+		n, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), 128)
+		class := syscall.UTF16ToString(buf[:n])
+		ok := strings.Contains(class, "WeChatMainWndForPC")
+		if !ok {
+			n2, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), 128)
+			title := syscall.UTF16ToString(buf[:n2])
+			ok = title == "微信" || title == "WeChat"
+		}
+		if ok {
+			var pid uint32
+			procGetWindowThreadPid.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+			if pid != 0 && !seen[pid] {
+				seen[pid] = true
+				out = append(out, pid)
+			}
+		}
+		return 1
+	})
+	procEnumWindows.Call(cb, 0)
+	return out
+}

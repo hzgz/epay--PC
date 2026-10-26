@@ -27,9 +27,11 @@ const (
 )
 
 var (
-	recMu    sync.Mutex
-	recDirty bool
-	recRoot  string
+	recMu     sync.Mutex
+	recDirty  bool
+	recRoot   string
+	recLoaded   = map[string]bool{} // 成功读进来的桶文件，用于安全清理
+	recLoadedMu sync.Mutex
 )
 
 func recordsRoot() string {
@@ -87,6 +89,9 @@ func loadRecords() []MsgView {
 		if json.Unmarshal(b, &items) != nil {
 			return nil
 		}
+		recLoadedMu.Lock()
+		recLoaded[path] = true
+		recLoadedMu.Unlock()
 		all = append(all, items...)
 		return nil
 	}); err != nil && !os.IsNotExist(err) {
@@ -176,11 +181,16 @@ func saveRecordsBuckets(items []MsgView) {
 			written[path] = true
 		}
 	}
-	// 只清理「本次明确写空」的桶。
-	// 不要删除没写到的文件：读盘失败时该桶不在内存里，删掉就等于数据丢失。
-	for path := range written {
-		_ = path
+	// 只清理「启动时成功读入、但本次没有内容」的桶，避免记录删了又复活。
+	// 读盘失败的桶不在 recLoaded 里，绝不会被删。
+	recLoadedMu.Lock()
+	for path := range recLoaded {
+		if !written[path] {
+			_ = os.Remove(path)
+			delete(recLoaded, path)
+		}
 	}
+	recLoadedMu.Unlock()
 }
 
 // markRecordsDirty 标记有待落盘的数据

@@ -120,6 +120,40 @@ func (c Config) EffectiveWxMode() string {
 	return "key"
 }
 
+// dedupeHookAccounts 同一 PID / 同一 wxid 只保留一条（历史 bug 产生的重复项）
+func (c *Config) dedupeHookAccounts() {
+	if len(c.HookAccounts) < 2 {
+		return
+	}
+	out := make([]HookAccount, 0, len(c.HookAccounts))
+	byPid := map[int]int{}
+	byWxid := map[string]int{}
+	for _, a := range c.HookAccounts {
+		if i, ok := byPid[a.PID]; ok && a.PID != 0 {
+			// 同 PID：保留已有那条，但补齐它缺的字段
+			if out[i].Wxid == "" && a.Wxid != "" {
+				out[i].Wxid = a.Wxid
+			}
+			if out[i].ChannelID == "" && a.ChannelID != "" {
+				out[i] = a
+			}
+			continue
+		}
+		if i, ok := byWxid[a.Wxid]; ok && a.Wxid != "" {
+			if out[i].PID == 0 && a.PID != 0 {
+				out[i].PID = a.PID
+			}
+			continue
+		}
+		byPid[a.PID] = len(out)
+		if a.Wxid != "" {
+			byWxid[a.Wxid] = len(out)
+		}
+		out = append(out, a)
+	}
+	c.HookAccounts = out
+}
+
 // EffectiveHookAccounts 返回启用的 Hook 账号
 func (c Config) EffectiveHookAccounts() []HookAccount {
 	out := make([]HookAccount, 0, len(c.HookAccounts))
@@ -230,6 +264,7 @@ func LoadConfig() error {
 		return err
 	}
 	decryptConfig(&cfg)
+	cfg.dedupeHookAccounts()
 	return nil
 }
 

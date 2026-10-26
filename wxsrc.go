@@ -130,6 +130,7 @@ func switchWxMode(mode string) {
 
 	// 两个方向都先停，避免两种源同时上报
 	StopAllWxMonitors()
+	StopAllLiveMonitors()
 	stopHookSource()
 
 	switch mode {

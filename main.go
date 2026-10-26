@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.57"
+	AppVersion = "1.58"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -202,7 +202,7 @@ func (e *Engine) pollOne(hk *Hooks) {
 		hk.Parsed++
 		e.mu.Unlock()
 
-		e.addDebug(m, len(buf))
+		e.addDebugFrom(m, len(buf), "db")
 
 		// 收款金额统计（不管是否转发都统计）
 		if m.Amount > 0 {

@@ -354,7 +354,7 @@ func (m *WxMonitor) recordDebug(w *WxWatch, raw RawMsg, gm GhMessage, title stri
 		GHFrom:  w.GhID,
 		GHName:  w.Name,
 	}
-	eng.addDebug(m2, len(raw.Content))
+	eng.addDebugFrom(m2, len(raw.Content), "db")
 }
 
 func itoa(n int) string {

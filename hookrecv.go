@@ -17,6 +17,7 @@ package main
 
 import (
 	"crypto/aes"
+	"unicode/utf8"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -249,7 +250,7 @@ var rePayFee = regexp.MustCompile(`<pay_fee>(\d+)</pay_fee>`)
 
 // hookAccountActive 该进程对应的 HK 账号是否处于运行状态
 func hookAccountActive(pid int) bool {
-	for _, a := range GetConfig().EffectiveHookAccounts() {
+	for _, a := range GetConfig().HookAccounts { // 原始列表：停用的账号也要能判断
 		if a.PID == pid {
 			return a.Enabled
 		}
@@ -285,6 +286,9 @@ func ghNickname(gh string) string {
 
 // handleHookMessage 把事件转成统一消息：全部进调试，只有 appmsg 参与过滤/上报
 func handleHookMessage(pid int, ev hookEvent) {
+	if os.Getenv("EASYMON_HOOK_TRACE") != "" {
+		logDebug("hook", "事件 type=%d len=%d head=%q", ev.Type, len(ev.Content), truncate(ev.Content, 60))
+	}
 	m := buildHookMsg(pid, ev)
 	if m == nil {
 		return
@@ -296,7 +300,11 @@ func handleHookMessage(pid int, ev hookEvent) {
 	if eng != nil {
 		eng.addDebug(m, len(ev.Content))
 	}
-	if ev.Type != 49 {
+	// 只有带 <appmsg> 的才是真正的公众号消息。
+	// 微信的同步/操作消息也是 <msg> 开头（<op id='2'>/<op id='5'>，会话列表更新），
+	// 但没有 <appmsg>，那些不是聊天内容，必须排除。
+	isAppmsg := ev.Type == 49 && strings.Contains(ev.Content, "<appmsg")
+	if !isAppmsg {
 		return
 	}
 	if d := ShouldForward(m); !d.Forward {
@@ -318,7 +326,7 @@ func buildHookMsg(pid int, ev hookEvent) *ChatMsg {
 
 	// 账号：按 PID 找绑定；找不到就用单账号 wxid，再退回 pid:<n>
 	account := ""
-	for _, a := range GetConfig().EffectiveHookAccounts() {
+	for _, a := range GetConfig().HookAccounts {
 		if a.PID == pid {
 			account = a.Wxid
 			break
@@ -333,7 +341,28 @@ func buildHookMsg(pid int, ev hookEvent) *ChatMsg {
 		}
 	}
 
-	if ev.Type != 49 {
+	// 只有带 <appmsg> 的才是真正的公众号消息。
+	// 微信的同步/操作消息也是 <msg> 开头（<op id='2'>/<op id='5'>，会话列表更新），
+	// 但没有 <appmsg>，那些不是聊天内容，必须排除。
+	isAppmsg := ev.Type == 49 && strings.Contains(ev.Content, "<appmsg")
+	if !isAppmsg {
+		// 二进制里的可打印片段会解出"看着像文字、其实是乱码"的串。
+		// 真正的聊天文字一定带 "昵称 : 正文" 的分隔符，没有就丢掉。
+		if !utf8.ValidString(text) || !strings.Contains(text, " : ") || len(text) < 6 {
+			return nil
+		}
+		// 微信内部的缓存串（会话 lastMessage、protobuf/JSON 片段）不是聊天内容
+		low := strings.ToLower(text)
+		for _, bad := range []string{"@chatroom", "lastmessage", "messagesvrid", "{", "}", "\"", "protobuf"} {
+			if strings.Contains(low, bad) {
+				return nil
+			}
+		}
+		// 昵称部分不能太长、不能是纯数字/纯 ID
+		head := strings.TrimSpace(text[:strings.Index(text, " : ")])
+		if head == "" || len([]rune(head)) > 40 || strings.HasPrefix(head, "wxid_") || strings.HasPrefix(head, "gh_") {
+			return nil
+		}
 		from := strings.TrimSpace(ev.Sender)
 		body := text
 		if i := strings.Index(text, " : "); i > 0 && i < 64 {
@@ -381,6 +410,10 @@ func buildHookMsg(pid int, ev hookEvent) *ChatMsg {
 	if m.Content == "" {
 		m.Content = truncate(stripTags(ev.Content), 80)
 		m.Display = m.Content
+	}
+	// 解析完什么都没有的（空 appmsg / 纯控制字段）不进调试
+	if strings.TrimSpace(m.Content) == "" {
+		return nil
 	}
 	return m
 }

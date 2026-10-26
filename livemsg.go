@@ -161,6 +161,19 @@ func StartLiveMonitor(wxid, dbPath, contactPath, keyHex string) error {
 }
 
 // StopLiveMonitor 停止某个账号的实时监控
+// StopAllLiveMonitors 停掉所有实时消息监控（切模式/停采集时用）
+func StopAllLiveMonitors() {
+	liveMonMu.Lock()
+	ids := make([]string, 0, len(liveMons))
+	for wxid := range liveMons {
+		ids = append(ids, wxid)
+	}
+	liveMonMu.Unlock()
+	for _, wxid := range ids {
+		StopLiveMonitor(wxid)
+	}
+}
+
 func StopLiveMonitor(wxid string) {
 	liveMonMu.Lock()
 	m := liveMons[wxid]
