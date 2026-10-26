@@ -2021,4 +2021,8 @@ func (e *Engine) forwardAndRecord(m *ChatMsg) {
 	e.mu.Unlock()
 
 	e.addHistory(m, ok, res.Err, &res)
+	// 只有网络层失败才重试；平台明确返回了内容（含业务报错）一律不重试
+	if !ok && reportRetryable(res) {
+		enqueueReportRetry(m, res)
+	}
 }

@@ -287,10 +287,11 @@ func ensureHookAccountForPid(pid uint32, knownWxid string) {
 	}
 	if created {
 		logInfo("hook", "已自动绑定当前微信进程 pid=%d", pid)
-	}
-	if GetConfig().Mode == "xpay" {
-		ensureXPayHeartbeat()
-		go xpayHeartbeatRound()
+		// 只有账号真的新增时才补发一轮心跳，避免每 5 秒都打平台一次
+		if GetConfig().Mode == "xpay" {
+			ensureXPayHeartbeat()
+			go xpayHeartbeatRound()
+		}
 	}
 }
 

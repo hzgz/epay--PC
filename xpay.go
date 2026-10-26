@@ -320,7 +320,15 @@ func xpayHeartbeatLoop(stop <-chan struct{}) {
 	}
 }
 
+var hbRoundMu sync.Mutex
+
 func xpayHeartbeatRound() {
+	// 单飞：多个触发点（账号保存、看护线程）同时发起时只跑一轮，
+	// 否则会对平台形成每秒一次的请求轰炸
+	if !hbRoundMu.TryLock() {
+		return
+	}
+	defer hbRoundMu.Unlock()
 	c := GetConfig()
 	if c.Mode != "xpay" || !c.XPayHeartbeat {
 		return
