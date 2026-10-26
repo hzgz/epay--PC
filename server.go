@@ -913,6 +913,14 @@ func startServer() (int, error) {
 			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "会话不存在"})
 			return
 		}
+		if owner, used := channelOwner(GetConfig().Mode, req.ChannelID, s.PID); used {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(409)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok": false, "err": fmt.Sprintf("通道 %s 已被账号 %s 占用，同一接口模式下不能重复", req.ChannelID, short(owner)),
+			})
+			return
+		}
 		s.SetChannelFor(GetConfig().Mode, req.ChannelID)
 		upsertAlipaySession(s)
 		saveAlipaySessions()
@@ -991,6 +999,15 @@ func startServer() (int, error) {
 			}
 			// 通道编码不由用户选，按账号类型定
 			a.ChannelCode = inferChannelCode(a.Wxid)
+			// 同一接口模式下通道号不能重复，否则平台会串账
+			if owner, used := channelOwner(GetConfig().Mode, a.ChannelID, a.Wxid); used {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(409)
+				json.NewEncoder(w).Encode(map[string]any{
+					"ok": false, "err": fmt.Sprintf("通道 %s 已被账号 %s 占用，同一接口模式下不能重复", a.ChannelID, short(owner)),
+				})
+				return
+			}
 			// 通道号按平台分存：X-Ypay 与码支付V1 是两套编号
 			mode := GetConfig().Mode
 			a.SetChannelFor(mode, a.ChannelID)
@@ -1359,6 +1376,15 @@ func startServer() (int, error) {
 		req.Enabled = true
 		c := GetConfig()
 		mode := c.Mode
+	// 同一接口模式下通道号不能重复（微信与支付宝共用一套编号）
+	if owner, used := channelOwner(mode, req.ChannelID, req.Wxid); used {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(409)
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok": false, "err": fmt.Sprintf("通道 %s 已被账号 %s 占用，同一接口模式下不能重复", req.ChannelID, short(owner)),
+		})
+		return
+	}
 		found := false
 		for i := range c.HookAccounts {
 			if c.HookAccounts[i].Wxid == req.Wxid {

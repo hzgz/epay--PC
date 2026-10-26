@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.60"
+	AppVersion = "1.61"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -362,6 +362,7 @@ func main() {
 		logError("config", "配置加载失败: %v", err)
 	}
 	c := GetConfig()
+	checkChannelConflicts()
 	// 首次运行：自动探测微信安装路径并落盘，用户不用手填
 	// 路径为空、或文件已不存在（换设备/微信重装后路径会变），都重新探测
 	needDetect := c.WeChatExe == ""

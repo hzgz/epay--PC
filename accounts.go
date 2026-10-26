@@ -137,6 +137,59 @@ func findAccount(wxid string) (Account, bool) {
 	return Account{}, false
 }
 
+// channelOwner 同一接口模式下，通道号是否已被别的账号占用。
+// 微信账号（含 HK）和支付宝账号共用一套编号，必须一起查，
+// 否则两个账号绑同一个通道，平台会把 A 的钱记到 B 头上。
+func channelOwner(mode, channelID, exceptWxid string) (string, bool) {
+	ch := strings.TrimSpace(channelID)
+	if ch == "" {
+		return "", false
+	}
+	for _, a := range accountsCopy() {
+		if a.Wxid == exceptWxid {
+			continue
+		}
+		if strings.TrimSpace(a.ChannelFor(mode)) == ch {
+			return a.Wxid, true
+		}
+	}
+	for _, h := range GetConfig().HookAccounts {
+		if h.Wxid == exceptWxid {
+			continue
+		}
+		if strings.TrimSpace(h.ChannelFor(mode)) == ch {
+			return h.Wxid, true
+		}
+	}
+	return "", false
+}
+
+// checkChannelConflicts 启动自检：同一接口模式下通道号重复会导致平台串账，
+// 已有的历史配置在这里报出来（不自动改，避免动用户数据）。
+func checkChannelConflicts() {
+	for _, mode := range []string{"xpay", "v1"} {
+		used := map[string]string{}
+		report := func(wxid, ch string) {
+			ch = strings.TrimSpace(ch)
+			if ch == "" || wxid == "" {
+				return
+			}
+			if prev, ok := used[ch]; ok && prev != wxid {
+				logWarn("config", "通道 %s 在 %s 模式下被账号 %s 和 %s 同时占用，会上报串账，请改掉一个",
+					ch, mode, short(prev), short(wxid))
+				return
+			}
+			used[ch] = wxid
+		}
+		for _, a := range accountsCopy() {
+			report(a.Wxid, a.ChannelFor(mode))
+		}
+		for _, h := range GetConfig().HookAccounts {
+			report(h.Wxid, h.ChannelFor(mode))
+		}
+	}
+}
+
 // setAccountEnabled 显式设置启用状态。
 // 不走 upsertAccount 的合并规则（那里为了保留通道字段用了 OR，会把"停用"盖回去）。
 func setAccountEnabled(wxid string, enabled bool) bool {
