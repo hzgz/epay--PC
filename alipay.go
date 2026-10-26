@@ -1194,6 +1194,8 @@ func alipayPollOne(s AlipaySession) {
 		if eng != nil {
 			eng.addHistoryEx(m, ok, res.Err, &res, "支付宝", alipayChannelCode(s.PID))
 		}
+		markAccountMessage(m.To, m.Content)
+		markAccountReport(m.To, ok, res.Err)
 		switch {
 		case ok:
 			reported++

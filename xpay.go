@@ -374,8 +374,10 @@ func xpayHeartbeatRound() {
 		}
 		if err := xpayHeartbeat(c, name, cid); err != nil {
 			logWarn("xpay", "账号 %s 心跳失败（通道 %s）：%v", short(a.Wxid), cid, err)
+			markAccountHeartbeat(a.Wxid, false, err.Error())
 		} else {
 			logDebug("xpay", "账号 %s 心跳成功（通道 %s）", short(a.Wxid), cid)
+			markAccountHeartbeat(a.Wxid, true, "")
 		}
 		time.Sleep(time.Second) // 账号之间错开 1 秒，和参考程序一致
 	}

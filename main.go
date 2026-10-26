@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.61"
+	AppVersion = "1.62"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -236,7 +236,8 @@ func (e *Engine) pollOne(hk *Hooks) {
 
 		d := ShouldForward(m)
 		if !d.Forward {
-			e.addHistory(m, false, "未命中关键词", nil)
+			markAccountMessage(m.To, m.Content)
+	e.addHistory(m, false, "未命中关键词", nil)
 			continue
 		}
 		e.mu.Lock()
@@ -264,6 +265,8 @@ func (e *Engine) pollOne(hk *Hooks) {
 			logInfo("callback", "上报成功 [%d] %s", res.Code, truncate(res.Body, 40))
 		}
 		e.mu.Unlock()
+		markAccountMessage(m.To, m.Content)
+		markAccountReport(m.To, reportOK, res.Err)
 		e.addHistory(m, reportOK, res.Err, &res)
 	}
 }

@@ -300,6 +300,7 @@ func handleHookMessage(pid int, ev hookEvent) {
 	if eng != nil {
 		eng.addDebug(m, len(ev.Content))
 	}
+	markAccountMessage(m.To, m.Content)
 	// 只有带 <appmsg> 的才是真正的公众号消息。
 	// 微信的同步/操作消息也是 <msg> 开头（<op id='2'>/<op id='5'>，会话列表更新），
 	// 但没有 <appmsg>，那些不是聊天内容，必须排除。

@@ -1477,6 +1477,11 @@ func startServer() (int, error) {
 	})
 
 	// 账号启停：状态独立保存；停止只停这个账号，删除才清账号（订单记录保留）
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(healthSnapshot())
+	})
+
 	mux.HandleFunc("/api/accounts/state", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "POST only", 405)
@@ -2047,6 +2052,7 @@ func (e *Engine) forwardAndRecord(m *ChatMsg) {
 	e.mu.Unlock()
 
 	e.addHistory(m, ok, res.Err, &res)
+	markAccountReport(m.To, ok, res.Err)
 	// 只有网络层失败才重试；平台明确返回了内容（含业务报错）一律不重试
 	if !ok && reportRetryable(res) {
 		enqueueReportRetry(m, res)

@@ -345,6 +345,19 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
           </div>
         </div>
       </div>
+
+      <!-- 账号健康 -->
+      <div class="card" style="margin-top:8px">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center">
+          <span style="font-size:15px;font-weight:600">账号状态</span>
+          <span style="font-size:12.5px;color:var(--sub);margin-left:10px">最后消息 / 心跳 / 上报</span>
+          <span style="flex:1"></span>
+          <span style="font-size:12px;color:var(--hint)" id="healthAt">—</span>
+        </div>
+        <div id="healthList">
+          <div class="empty" style="padding:16px 0">还没有账号数据</div>
+        </div>
+      </div>
       </div>
 
       <!-- 收款记录 -->
@@ -2518,6 +2531,44 @@ $('#aliAdd').onclick = ()=> startAlipayLogin('');
 /* ---------- 账号列表 ---------- */
 let accountsCache = [];
 let editingWxid = '';
+
+function healthAgo(ts){
+  if(!ts) return '—';
+  const d = Math.max(0, Math.floor(Date.now()/1000) - ts);
+  if(d < 60) return d + ' 秒前';
+  if(d < 3600) return Math.floor(d/60) + ' 分钟前';
+  if(d < 86400) return Math.floor(d/3600) + ' 小时前';
+  return Math.floor(d/86400) + ' 天前';
+}
+
+async function refreshHealth(){
+  const box = document.getElementById('healthList');
+  if(!box) return;
+  try{
+    const list = await (await fetch('/api/health')).json();
+    const at = document.getElementById('healthAt');
+    if(at) at.textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN',{hour12:false});
+    if(!Array.isArray(list) || !list.length){
+      box.innerHTML = '<div class="empty" style="padding:16px 0">还没有账号数据</div>';
+      return;
+    }
+    box.innerHTML = list.map(h=>{
+      const hb = h.last_hb_at ? (h.last_hb_ok
+        ? `<span style="color:var(--green)">正常 · ${healthAgo(h.last_hb_at)}</span>`
+        : `<span style="color:var(--red)" title="${esc(h.last_hb_err||'')}">失败 · ${healthAgo(h.last_hb_at)}</span>`) : '<span style="color:var(--hint)">—</span>';
+      const rp = h.last_report_at ? (h.last_report_ok
+        ? `<span style="color:var(--green)">成功 · ${healthAgo(h.last_report_at)}</span>`
+        : `<span style="color:var(--red)" title="${esc(h.last_report_err||'')}">失败 · ${healthAgo(h.last_report_at)}</span>`) : '<span style="color:var(--hint)">—</span>';
+      return `<div style="display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line);font-size:13px">
+        <div style="min-width:0"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis">${esc(h.account)}</div>
+          <div style="font-size:11.5px;color:var(--hint);margin-top:2px">${esc(h.kind||'')} · 消息 ${h.msg_count} 条</div></div>
+        <div><div style="font-size:11.5px;color:var(--hint);margin-bottom:2px">最后消息</div>${healthAgo(h.last_msg_at)}</div>
+        <div><div style="font-size:11.5px;color:var(--hint);margin-bottom:2px">心跳</div>${hb}</div>
+        <div><div style="font-size:11.5px;color:var(--hint);margin-bottom:2px">上报</div>${rp}</div>
+      </div>`;
+    }).join('');
+  }catch(e){}
+}
 
 async function refreshAccounts(){
   try{
