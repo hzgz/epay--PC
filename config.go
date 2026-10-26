@@ -57,6 +57,8 @@ type Config struct {
 	HookListen string `json:"hook_listen"`
 	// 用户主动删光 HK 账号后不再自动绑定（否则永远删不干净，切不回密钥模式）
 	HookNoAutoBind bool `json:"hook_no_autobind"`
+	// 用户手动删除过的账号（wxid），进程还在时也不自动加回来
+	HookBlocked []string `json:"hook_blocked"`
 	HookKey    string `json:"hook_key"`
 	// Hook 模式的账号列表，和密钥模式互不影响
 	HookAccounts []HookAccount `json:"hook_accounts"`
@@ -118,6 +120,16 @@ func (c Config) EffectiveWxMode() string {
 		return "hook"
 	}
 	return "key"
+}
+
+// HookBlockedWxid 该账号是否被用户删除过
+func (c Config) HookBlockedWxid(wxid string) bool {
+	for _, x := range c.HookBlocked {
+		if x == wxid {
+			return true
+		}
+	}
+	return false
 }
 
 // dedupeHookAccounts 同一 PID / 同一 wxid 只保留一条（历史 bug 产生的重复项）
@@ -352,7 +364,28 @@ func GetConfig() Config {
 	return c
 }
 
+var cfgWriteMu sync.Mutex
+
+// UpdateConfig 串行化的读-改-写：并发保存不会互相覆盖。
+// 所有"取当前配置 → 改几个字段 → 存回"的地方都应该用它，而不是 SetConfig。
+func UpdateConfig(fn func(*Config) error) error {
+	cfgWriteMu.Lock()
+	defer cfgWriteMu.Unlock()
+	cur := GetConfig()
+	if err := fn(&cur); err != nil {
+		return err
+	}
+	return setConfigLocked(cur)
+}
+
+// SetConfig 整份覆盖（仅在明确知道要写全部字段时使用）
 func SetConfig(c Config) error {
+	cfgWriteMu.Lock()
+	defer cfgWriteMu.Unlock()
+	return setConfigLocked(c)
+}
+
+func setConfigLocked(c Config) error {
 	cfgMu.Lock()
 	cfg = c
 	cfgMu.Unlock()

@@ -1107,6 +1107,10 @@ func alipayPollRound() {
 		if s.Status != "confirmed" || s.PID == "" {
 			continue
 		}
+		// 账号被手动停止时不再拉账单（会话保留，重新启动即可恢复）
+		if acc, ok := findAccount(s.PID); ok && !acc.Enabled {
+			continue
+		}
 		alipayPollOne(s)
 	}
 }

@@ -179,3 +179,6 @@ func WxidForPids(pids []uint32) map[uint32]string {
 	}
 	return out
 }
+
+// mustWeixinPids 所有微信主窗口进程（诊断用）
+func mustWeixinPids() []uint32 { return MainWeChatPids() }

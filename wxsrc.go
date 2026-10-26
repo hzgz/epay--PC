@@ -116,9 +116,11 @@ func startWxMonitorsFromConfig() {
 func switchWxMode(mode string) {
 	// 真正切换模式时恢复自动绑定（用户删光账号导致的关闭状态只影响当前这一次）
 	if mode == "hook" {
+		// 重新切进 HK 模式视为重新开始：清掉"删空不再自动绑定"和删除黑名单
 		c := GetConfig()
-		if c.HookNoAutoBind {
+		if c.HookNoAutoBind || len(c.HookBlocked) > 0 {
 			c.HookNoAutoBind = false
+			c.HookBlocked = nil
 			_ = SetConfig(c)
 		}
 	}

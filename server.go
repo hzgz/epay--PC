@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"os"
@@ -468,42 +469,46 @@ func startServer() (int, error) {
 				http.Error(w, err.Error(), 400)
 				return
 			}
-			old := GetConfig()
-			oldWxMode := old.EffectiveWxMode()
-
-			// 账号列表由各自接口维护（/api/accounts、/api/wx/bind、/api/wx/hook/account）。
-			// 设置页保存的是配置快照，不能让它把账号列表覆盖掉——
-			// 历史上 db_accounts 被清空就是这么发生的。
-			c.DbAccounts = old.DbAccounts
-			c.DbWxid, c.DbKey = old.DbWxid, old.DbKey
-			c.HookAccounts = old.HookAccounts
-
-			// 密钥：界面拿到的是打码值，空值/打码值一律视为“不修改”
-			if c.XPaySecret == "" || c.XPaySecret == secretMask {
-				c.XPaySecret = old.XPaySecret
-			}
-			if c.V1Secret == "" || c.V1Secret == secretMask {
-				c.V1Secret = old.V1Secret
-			}
-			if c.YjkToken == "" || c.YjkToken == secretMask {
-				c.YjkToken = old.YjkToken
-			}
-
-			// 采集模式切换必须先校验「当前模式的账号已删干净」，
-			// 而且校验必须在写配置之前——否则会出现"拒绝切换但配置已改"的混用状态。
-			newWxMode := c.EffectiveWxMode()
-			if newWxMode != oldWxMode {
-				if oldWxMode == "hook" && len(old.EffectiveHookAccounts()) > 0 {
-					http.Error(w, `{"ok":false,"err":"切换前请先删除 Hook 模式下的微信账号"}`, 409)
+			// 串行化读-改-写：并发保存不会互相覆盖（账号列表/密钥/模式原子更新）
+			var oldWxMode, newWxMode string
+			errReject := errors.New("reject")
+			rejectMsg := ""
+			if err := UpdateConfig(func(cur *Config) error {
+				oldWxMode = cur.EffectiveWxMode()
+				m := c // 界面提交的快照
+				m.DbAccounts = cur.DbAccounts
+				m.DbWxid, m.DbKey = cur.DbWxid, cur.DbKey
+				m.HookAccounts = cur.HookAccounts
+				if m.XPaySecret == "" || m.XPaySecret == secretMask {
+					m.XPaySecret = cur.XPaySecret
+				}
+				if m.V1Secret == "" || m.V1Secret == secretMask {
+					m.V1Secret = cur.V1Secret
+				}
+				if m.YjkToken == "" || m.YjkToken == secretMask {
+					m.YjkToken = cur.YjkToken
+				}
+				newWxMode = m.EffectiveWxMode()
+				if newWxMode != oldWxMode {
+					if oldWxMode == "hook" && len(cur.EffectiveHookAccounts()) > 0 {
+						rejectMsg = "切换前请先删除 HK 模式下的微信账号"
+						return errReject
+					}
+					if oldWxMode == "key" && len(cur.EffectiveDbAccounts()) > 0 {
+						rejectMsg = "切换前请先删除通行密钥模式下的微信账号"
+						return errReject
+					}
+				}
+				*cur = m
+				c = m
+				return nil
+			}); err != nil {
+				if err == errReject {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(409)
+					json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": rejectMsg})
 					return
 				}
-				if oldWxMode == "key" && len(old.EffectiveDbAccounts()) > 0 {
-					http.Error(w, `{"ok":false,"err":"切换前请先删除通行密钥模式下的微信账号"}`, 409)
-					return
-				}
-			}
-
-			if err := SetConfig(c); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}
@@ -1384,6 +1389,15 @@ func startServer() (int, error) {
 			return
 		}
 		c.HookNoAutoBind = false
+		if c.HookBlockedWxid(req.Wxid) {
+			kept := make([]string, 0, len(c.HookBlocked))
+			for _, x := range c.HookBlocked {
+				if x != req.Wxid {
+					kept = append(kept, x)
+				}
+			}
+			c.HookBlocked = kept
+		}
 		if err := SetConfig(c); err != nil {
 			logWarn("hook", "保存配置失败：%v", err)
 		}
@@ -1455,8 +1469,11 @@ func startServer() (int, error) {
 			http.Error(w, "not found", 404)
 			return
 		}
+		if !setAccountEnabled(req.Wxid, req.Enabled) {
+			http.Error(w, "not found", 404)
+			return
+		}
 		a.Enabled = req.Enabled
-		upsertAccount(a)
 		if GetConfig().EffectiveWxMode() == "key" {
 			if req.Enabled {
 				var da DbAccount
@@ -1476,6 +1493,7 @@ func startServer() (int, error) {
 				}
 			} else {
 				StopWxMonitorFor(req.Wxid)
+				StopLiveMonitor(req.Wxid)
 			}
 		}
 		logInfo("config", "账号 %s 已%s", req.Wxid, map[bool]string{true: "启动", false: "停止"}[req.Enabled])
@@ -1533,22 +1551,19 @@ func startServer() (int, error) {
 			}
 		}
 		c.HookAccounts = kept
-		if err := SetConfig(c); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		logInfo("hook", "已移除账号 %s", wxid)
-		if len(c.EffectiveHookAccounts()) == 0 {
-			c.HookNoAutoBind = true
-			if err := SetConfig(c); err != nil {
-				logWarn("hook", "保存配置失败：%v", err)
-			}
-		}
-		if c.EffectiveWxMode() == "hook" {
-			stopHookSource()
-			startHookSource()
-		}
-		w.Header().Set("Content-Type", "application/json")
+	// 记入删除黑名单：进程还在时也不自动加回来；删空再额外关掉自动绑定
+	if !c.HookBlockedWxid(wxid) {
+		c.HookBlocked = append(c.HookBlocked, wxid)
+	}
+	if len(kept) == 0 {
+		c.HookNoAutoBind = true
+	}
+	if err := SetConfig(c); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	logInfo("hook", "已移除账号 %s", wxid)
+	w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"ok":true}`))
 	})
 

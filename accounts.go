@@ -137,6 +137,25 @@ func findAccount(wxid string) (Account, bool) {
 	return Account{}, false
 }
 
+// setAccountEnabled 显式设置启用状态。
+// 不走 upsertAccount 的合并规则（那里为了保留通道字段用了 OR，会把"停用"盖回去）。
+func setAccountEnabled(wxid string, enabled bool) bool {
+	accMu.Lock()
+	found := false
+	for i := range accList {
+		if accList[i].Wxid == wxid {
+			accList[i].Enabled = enabled
+			found = true
+			break
+		}
+	}
+	accMu.Unlock()
+	if found {
+		saveAccounts()
+	}
+	return found
+}
+
 // upsertAccount 新增或更新一个账号
 func upsertAccount(a Account) {
 	accMu.Lock()
@@ -199,8 +218,9 @@ func removeAccount(wxid string) {
 func deleteAccountAll(wxid string) {
 	removeAccount(wxid)
 
-	// 停掉该账号的数据库监控（不影响其他账号）
+	// 停掉该账号的数据库监控和实时消息监控（不影响其他账号）
 	StopWxMonitorFor(wxid)
+	StopLiveMonitor(wxid)
 	logInfo("config", "已停止账号 %s 的数据库监控", wxid)
 
 	// 从多账号配置里移除该账号
@@ -225,6 +245,20 @@ func deleteAccountAll(wxid string) {
 	if changed {
 		SetConfig(cfg)
 		logInfo("config", "已清除账号 %s 的数据库配置", wxid)
+	}
+
+	// 支付宝：账号=会话，删除账号必须把会话一起停掉，
+	// 否则轮询会继续拉账单、继续产生记录（账号看着"删了还在跑"）
+	removed := 0
+	for _, se := range alipaySessionsCopy() {
+		if se.PID == wxid || se.ID == wxid {
+			removeAlipaySession(se.ID)
+			removed++
+		}
+	}
+	if removed > 0 {
+		_ = saveAlipaySessions()
+		logInfo("alipay", "已停止账号 %s 的账单轮询", maskPid(wxid))
 	}
 
 	logInfo("config", "账号已删除 %s（订单记录与支付信息保留）", wxid)

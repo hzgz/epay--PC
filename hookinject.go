@@ -219,173 +219,100 @@ func singleWxidFromDisk() string {
 
 func ensureHookAccountForPid(pid uint32, knownWxid string) {
 	pidInt := int(pid)
-	c := GetConfig()
-	accounts := c.HookAccounts
 	wxid := knownWxid
 	if wxid == "" && len(MainWeChatPids()) <= 1 {
 		wxid = singleWxidFromDisk()
 	}
 
-	kept := make([]HookAccount, 0, len(accounts)+1)
-	done := false
-	changed := false
-	for _, a := range accounts {
-		if a.PID == pidInt {
-			if done {
-				changed = true // 同 PID 重复项，丢掉
+	created := false
+	err := UpdateConfig(func(c *Config) error {
+		accounts := c.HookAccounts
+		kept := make([]HookAccount, 0, len(accounts)+1)
+		done := false
+		changed := false
+		for _, a := range accounts {
+			if a.PID == pidInt {
+				if done {
+					changed = true
+					continue
+				}
+				if wxid != "" && a.Wxid != wxid {
+					a.Wxid = wxid
+					changed = true
+				}
+				kept = append(kept, a)
+				done = true
 				continue
 			}
-			if wxid != "" && a.Wxid != wxid {
-				a.Wxid = wxid
-				changed = true
-			}
-			kept = append(kept, a)
-			done = true
-			continue
-		}
-		if wxid != "" && a.Wxid == wxid {
-			if done {
-				changed = true
+			if wxid != "" && a.Wxid == wxid {
+				if done {
+					changed = true
+					continue
+				}
+				if a.PID != pidInt {
+					a.PID = pidInt
+					changed = true
+				}
+				kept = append(kept, a)
+				done = true
 				continue
 			}
-			// 同一个账号换了进程：更新 PID，保留通道号
-			if a.PID != pidInt {
-				a.PID = pidInt
-				changed = true
-			}
 			kept = append(kept, a)
-			done = true
-			continue
 		}
-		kept = append(kept, a)
-	}
 
-	// 账号身份：单实例用 wxid，多开用 pid；同一 PID 只保留一条
-	if !done {
-		if c.HookNoAutoBind && len(accounts) == 0 {
-			return
+		if !done {
+			if c.HookNoAutoBind && len(accounts) == 0 {
+				return nil
+			}
+			if wxid != "" && c.HookBlockedWxid(wxid) {
+				return nil
+			}
+			name := wxid
+			if name == "" {
+				name = fmt.Sprintf("pid:%d", pid)
+			}
+			kept = append(kept, HookAccount{Wxid: name, PID: pidInt, Enabled: true})
+			changed = true
+			created = true
 		}
-		name := wxid
-		if name == "" {
-			name = fmt.Sprintf("pid:%d", pid)
+		if !changed {
+			return nil
 		}
-		// 新账号不继承别人的通道号：两个账号共用一个通道会导致上报串账。
-		// 同一 wxid 换 PID 的情况在下面单独处理（那才需要沿用）。
-		ch := ""
-		kept = append(kept, HookAccount{Wxid: name, PID: pidInt, ChannelID: ch, Enabled: true})
-		changed = true
-		logInfo("hook", "已自动绑定当前微信进程 pid=%d", pid)
-	}
-
-	if !changed {
-		return
-	}
-	c.HookAccounts = kept
-	if err := SetConfig(c); err != nil {
+		c.HookAccounts = kept
+		return nil
+	})
+	if err != nil {
 		logWarn("hook", "更新账号失败：%v", err)
 		return
 	}
-	if strings.TrimSpace(c.Mode) == "xpay" {
+	if created {
+		logInfo("hook", "已自动绑定当前微信进程 pid=%d", pid)
+	}
+	if GetConfig().Mode == "xpay" {
 		ensureXPayHeartbeat()
 		go xpayHeartbeatRound()
 	}
 }
 
-// stopHookWatcher 停止看护
-func stopHookWatcher() {
-	hookWatchMu.Lock()
-	if hookWatchStop != nil {
-		close(hookWatchStop)
-		hookWatchStop = nil
-	}
-	injectedPid = 0
-	hookWatchMu.Unlock()
-}
-
-// loadedHookModule 目标进程里是否已加载指定文件名的 hook 模块
-// （进程里可能残留旧版本，只认目标版本，避免反复注入）
-func loadedHookModule(pid uint32, want string) bool {
-	mods, err := snapshotModules(pid)
-	if err != nil {
-		return false
-	}
-	want = strings.ToLower(want)
-	for _, n := range mods {
-		if strings.ToLower(n) == want {
-			return true
+// clearHookBlocked 用户手动添加账号时解除删除黑名单
+func clearHookBlocked(wxid string) {
+	c := GetConfig()
+	out := make([]string, 0, len(c.HookBlocked))
+	changed := false
+	for _, x := range c.HookBlocked {
+		if x == wxid {
+			changed = true
+			continue
 		}
+		out = append(out, x)
 	}
-	return false
+	if !changed {
+		return
+	}
+	c.HookBlocked = out
+	_ = SetConfig(c)
 }
 
-// moduleLoaded 目标进程里是否已加载某个名字的模块（按前缀匹配，兼容带版本后缀的 dll）
-func moduleLoaded(pid uint32, prefix string) bool {
-	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPMODULE|windows.TH32CS_SNAPMODULE32, pid)
-	if err != nil {
-		return false
-	}
-	defer windows.CloseHandle(snap)
-	var me windows.ModuleEntry32
-	me.Size = uint32(unsafe.Sizeof(me))
-	if err := windows.Module32First(snap, &me); err != nil {
-		return false
-	}
-	for {
-		name := strings.ToLower(windows.UTF16ToString(me.Module[:]))
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-		if err := windows.Module32Next(snap, &me); err != nil {
-			return false
-		}
-	}
-}
-
-// hookLogSize / hookLogHasSince 用 DLL 日志判断挂钩是否成功
-func hookLogPath() string { return filepath.Join(os.TempDir(), "easymon_hook.log") }
-
-func hookLogSize() int64 {
-	st, err := os.Stat(hookLogPath())
-	if err != nil {
-		return 0
-	}
-	return st.Size()
-}
-
-func hookLogHasSince(offset int64, needle string) bool {
-	f, err := os.Open(hookLogPath())
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	if offset > 0 {
-		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			return false
-		}
-	}
-	b, err := io.ReadAll(f)
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(b), needle)
-}
-
-// HookDLLInfo 供界面显示
-func HookDLLInfo() map[string]any {
-	p := hookDLLPath()
-	name := ""
-	if p != "" {
-		name = filepath.Base(p)
-	}
-	return map[string]any{
-		"path": p, "name": name,
-		"injected_pid": injectedPid,
-		"exists":       strings.TrimSpace(p) != "",
-	}
-}
-
-// pruneDeadHookAccounts 清掉进程已经不在的账号（微信退出/实例关闭）。
-// 用户手动"停止"的账号进程通常还在，不会被清掉。
 func pruneDeadHookAccounts(alivePids []uint32) {
 	alive := make(map[int]bool, len(alivePids))
 	for _, p := range alivePids {
@@ -446,4 +373,83 @@ func snapshotModules(pid uint32) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// stopHookWatcher 停止看护线程
+func stopHookWatcher() {
+	hookWatchMu.Lock()
+	if hookWatchStop != nil {
+		close(hookWatchStop)
+		hookWatchStop = nil
+	}
+	hookWatchMu.Unlock()
+}
+
+// moduleLoaded 目标进程里是否已加载以 prefix 开头的模块
+func moduleLoaded(pid uint32, prefix string) bool {
+	mods, err := snapshotModules(pid)
+	if err != nil {
+		return false
+	}
+	prefix = strings.ToLower(prefix)
+	for _, n := range mods {
+		if strings.HasPrefix(strings.ToLower(n), prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// loadedHookModule 目标进程里是否已加载指定文件名的 hook 模块
+func loadedHookModule(pid uint32, want string) bool {
+	mods, err := snapshotModules(pid)
+	if err != nil {
+		return false
+	}
+	want = strings.ToLower(want)
+	for _, n := range mods {
+		if strings.ToLower(n) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// HookDLLInfo 供界面显示
+func HookDLLInfo() map[string]any {
+	dll := hookDLLPath()
+	return map[string]any{
+		"exists":       dll != "",
+		"path":         dll,
+		"name":         filepath.Base(dll),
+		"injected_pid": injectedPid,
+	}
+}
+
+func hookLogPath() string { return filepath.Join(os.TempDir(), "easymon_hook.log") }
+
+func hookLogSize() int64 {
+	st, err := os.Stat(hookLogPath())
+	if err != nil {
+		return 0
+	}
+	return st.Size()
+}
+
+func hookLogHasSince(offset int64, needle string) bool {
+	f, err := os.Open(hookLogPath())
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return false
+		}
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), needle)
 }
