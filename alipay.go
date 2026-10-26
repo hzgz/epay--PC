@@ -1196,6 +1196,9 @@ func alipayPollOne(s AlipaySession) {
 		}
 		markAccountMessage(m.To, m.Content)
 		markAccountReport(m.To, ok, res.Err)
+		if !ok && reportRetryable(res) {
+			enqueueReportRetry(m, res, "alipay")
+		}
 		switch {
 		case ok:
 			reported++

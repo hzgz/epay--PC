@@ -2055,6 +2055,6 @@ func (e *Engine) forwardAndRecord(m *ChatMsg) {
 	markAccountReport(m.To, ok, res.Err)
 	// 只有网络层失败才重试；平台明确返回了内容（含业务报错）一律不重试
 	if !ok && reportRetryable(res) {
-		enqueueReportRetry(m, res)
+		enqueueReportRetry(m, res, "wechat")
 	}
 }

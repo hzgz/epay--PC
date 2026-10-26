@@ -368,7 +368,14 @@ func v1LooksOK(body string) bool {
 }
 
 func Report(m *ChatMsg) ReportResult {
+	return ReportWithMode(m, GetConfig().Mode)
+}
+
+// ReportWithMode 用指定接口模式上报。重试队列用它锁定入队时的平台，
+// 避免重试期间切换 xpay/v1 把旧单发到新平台。
+func ReportWithMode(m *ChatMsg, mode string) ReportResult {
 	c := GetConfig()
+	c.Mode = mode
 	switch c.Mode {
 	case "yjk":
 		return sendYjk(m, c)
