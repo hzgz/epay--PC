@@ -44,3 +44,17 @@ ref_bizdata*.json
 ref_chat*.html
 ref_gui_page.html
 *.dmp
+
+# 收款记录（按模式/账号分目录，运行数据）
+records/
+records.json.migrated
+
+# 本地开发探针（诊断用，不入库）
+*_probe_test.go
+
+# 本地构建的消息组件与测试程序（发布包里带）
+native/easymon_hook*.dll
+native/harness*
+native/trivial*
+# WebView2 用户数据目录（目录名随程序名，可能含中文/乱码）
+EBWebView/

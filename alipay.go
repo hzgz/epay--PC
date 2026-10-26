@@ -58,7 +58,9 @@ type AlipaySession struct {
 	Status    string `json:"status"`    // waiting / confirmed / expired / offline
 	Nick      string `json:"nick"`
 
-	ChannelID string `json:"channel_id"` // 账号绑定的通道 ID
+	ChannelID     string `json:"channel_id"`      // 通用通道 ID（旧字段，兜底）
+	ChannelIDXpay string `json:"channel_id_xpay"` // X-Ypay 通道
+	ChannelIDV1   string `json:"channel_id_v1"`   // 码支付V1 通道
 
 	QRURL      string `json:"qr_url"`
 	SecurityID string `json:"security_id"`
@@ -807,7 +809,7 @@ func finishBrowserLogin(sessionID string, cookies []AlipayCookie, ua string) boo
 	if s.PID != "" {
 		upsertAccount(Account{
 			Type: "alipay", Wxid: s.PID, Nick: s.Nick,
-			ChannelID: s.ChannelID, ChannelCode: "alipay_app", Enabled: true,
+			ChannelID: s.ChannelFor(GetConfig().Mode), ChannelCode: "alipay_app", Enabled: true,
 		})
 	}
 	logInfo("alipay", "登录完成：Cookie %d 条，PID=%s，%s", len(cookies), maskPid(s.PID), s.HeartbeatMsg)
@@ -1400,7 +1402,7 @@ func alipayView(s AlipaySession) map[string]any {
 		"masked_id":       s.MaskedID,
 		"nick":            s.Nick,
 		"status":          s.Status,
-		"channel_id":      s.ChannelID,
+		"channel_id":      s.ChannelFor(GetConfig().Mode),
 		"created_at":      s.CreatedAt,
 		"online_since":    s.OnlineSince,
 		"last_check":      s.LastCheck,
@@ -1511,3 +1513,29 @@ func alipayDetectSecurityCheck(body []byte) *alipaySecurityCheck {
 	return &alipaySecurityCheck{SecurityID: sid, QRURL: qr}
 }
 
+// ChannelFor 按平台取通道 ID，未设置时回落到通用字段
+func (s AlipaySession) ChannelFor(mode string) string {
+	switch mode {
+	case "v1":
+		if x := strings.TrimSpace(s.ChannelIDV1); x != "" {
+			return x
+		}
+	case "xpay":
+		if x := strings.TrimSpace(s.ChannelIDXpay); x != "" {
+			return x
+		}
+	}
+	return strings.TrimSpace(s.ChannelID)
+}
+
+// SetChannelFor 按平台写入通道 ID，并同步旧字段
+func (s *AlipaySession) SetChannelFor(mode, id string) {
+	id = strings.TrimSpace(id)
+	s.ChannelID = id
+	switch mode {
+	case "v1":
+		s.ChannelIDV1 = id
+	case "xpay":
+		s.ChannelIDXpay = id
+	}
+}

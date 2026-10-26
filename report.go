@@ -262,7 +262,7 @@ func sendV1(m *ChatMsg, c Config) ReportResult {
 	acc, ok := findAccount(m.To)
 	channel := ""
 	if ok {
-		channel = strings.TrimSpace(acc.ChannelID)
+		channel = acc.ChannelFor(GetConfig().Mode)
 	}
 	if channel == "" {
 		return ReportResult{Err: fmt.Sprintf("收款账号 %s 未绑定通道", short(m.To))}

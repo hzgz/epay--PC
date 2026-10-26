@@ -1,68 +1,186 @@
 package main
 
 // 收款记录持久化：重启不丢数据。
-// 注意：这里只保存「本程序运行时亲眼抓到的消息」，
-// 与读取微信历史聊天记录是两回事。
+//
+// 存放结构（按「采集模式 + 账号」分开，避免两套通道的数据混在一起）：
+//
+//	records/key/wxid_xxx.json     通行密钥模式的记录
+//	records/hook/pid_41484.json   Hook 模式的记录
+//
+// 旧版单文件 records.json 会在启动时自动迁移到 records/key/ 下。
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	recordsMax  = 2000             // 最多保留多少条
-	recordsFile = "records.json"
+	recordsMax      = 2000
+	recordsRootDir  = "records"
+	legacyRecordsFn = "records.json"
 )
 
 var (
-	recMu   sync.Mutex
+	recMu    sync.Mutex
 	recDirty bool
-	recPath  string
+	recRoot  string
 )
 
-func recordsPath() string {
-	if recPath != "" {
-		return recPath
+func recordsRoot() string {
+	if recRoot != "" {
+		return recRoot
 	}
-	exe, err := os.Executable()
-	dir := "."
-	if err == nil {
-		dir = filepath.Dir(exe)
-	}
-	recPath = filepath.Join(dir, recordsFile)
-	return recPath
+	recRoot = filepath.Join(exeDir(), recordsRootDir)
+	return recRoot
 }
 
-// loadRecords 启动时把上次的记录读回来
-func loadRecords() []MsgView {
-	recMu.Lock()
-	defer recMu.Unlock()
-	b, err := os.ReadFile(recordsPath())
-	if err != nil {
-		return nil
+// sanitizeName 文件名只保留安全字符
+func sanitizeName(s string) string {
+	if s == "" {
+		return "default"
 	}
-	var out []MsgView
-	if json.Unmarshal(b, &out) != nil {
-		return nil
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := b.String()
+	if len(out) > 80 {
+		out = out[:80]
 	}
 	return out
 }
 
-// saveRecords 把记录写到磁盘（调用方负责加锁或传入副本）
-func saveRecords(items []MsgView) {
-	b, err := json.MarshalIndent(items, "", " ")
-	if err != nil {
-		return
+// recordBucketFile records/<mode>/<account>.json
+func recordBucketFile(mode, account string) string {
+	if mode != "hook" && mode != "alipay" {
+		mode = "key"
 	}
-	tmp := recordsPath() + ".tmp"
-	if atomicWriteFile(tmp, b, 0644) != nil {
-		return
+	return filepath.Join(recordsRoot(), mode, sanitizeName(account)+".json")
+}
+
+// loadRecords 启动时把所有桶读回来；顺便迁移旧版 records.json
+func loadRecords() []MsgView {
+	recMu.Lock()
+	defer recMu.Unlock()
+
+	all := make([]MsgView, 0, 256)
+	if err := filepath.WalkDir(recordsRoot(), func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".json") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		var items []MsgView
+		if json.Unmarshal(b, &items) != nil {
+			return nil
+		}
+		all = append(all, items...)
+		return nil
+	}); err != nil && !os.IsNotExist(err) {
+		logWarn("records", "读取记录目录失败: %v", err)
 	}
-	os.Rename(tmp, recordsPath())
+
+	// 旧版单文件：迁移到 key 桶
+	legacy := filepath.Join(exeDir(), legacyRecordsFn)
+	if b, err := os.ReadFile(legacy); err == nil {
+		var items []MsgView
+		if json.Unmarshal(b, &items) == nil {
+			for i := range items {
+				if items[i].WxMode == "" {
+					items[i].WxMode = "key"
+				}
+				if items[i].Account == "" {
+					items[i].Account = items[i].To
+				}
+			}
+			all = append(all, items...)
+			_ = os.Rename(legacy, legacy+".migrated")
+			logInfo("records", "已迁移旧记录 %d 条到 records/key/", len(items))
+		}
+	}
+
+	// 支付宝记录与微信采集模式无关，统一挪到 alipay 桶，避免切模式后"看不到"
+	migratedAlipay := false
+	for i := range all {
+		if all[i].Platform == "支付宝" && all[i].WxMode != "alipay" {
+			all[i].WxMode = "alipay"
+			migratedAlipay = true
+		}
+	}
+
+	sort.Slice(all, func(i, j int) bool { return all[i].Time > all[j].Time })
+	if migratedAlipay {
+		saveRecordsBuckets(all)
+		logInfo("records", "支付宝记录已归入独立分类")
+	}
+
+	// 首次从旧单文件迁移后立刻按桶落盘，避免"迁移了但目录还是空的"
+	if len(all) > 0 {
+		if _, err := os.Stat(recordsRoot()); err != nil {
+			saveRecordsBuckets(all)
+			logInfo("records", "已按模式/账号拆分落盘 %d 条", len(all))
+		}
+	}
+	return all
+}
+
+// saveRecordsBuckets 按 (模式, 账号) 分组落盘
+func saveRecordsBuckets(items []MsgView) {
+	groups := map[string][]MsgView{}
+	for _, it := range items {
+		mode := it.WxMode
+		if mode != "hook" && mode != "alipay" {
+			mode = "key"
+		}
+		acc := it.Account
+		if acc == "" {
+			acc = it.To
+		}
+		key := mode + "|" + acc
+		groups[key] = append(groups[key], it)
+	}
+
+	written := map[string]bool{}
+	for key, list := range groups {
+		parts := strings.SplitN(key, "|", 2)
+		mode, acc := parts[0], parts[1]
+		if len(list) > recordsMax {
+			list = list[:recordsMax]
+		}
+		b, err := json.MarshalIndent(list, "", " ")
+		if err != nil {
+			continue
+		}
+		path := recordBucketFile(mode, acc)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			continue
+		}
+		tmp := path + ".tmp"
+		if atomicWriteFile(tmp, b, 0o644) != nil {
+			continue
+		}
+		if os.Rename(tmp, path) == nil {
+			written[path] = true
+		}
+	}
+	// 只清理「本次明确写空」的桶。
+	// 不要删除没写到的文件：读盘失败时该桶不在内存里，删掉就等于数据丢失。
+	for path := range written {
+		_ = path
+	}
 }
 
 // markRecordsDirty 标记有待落盘的数据
@@ -88,23 +206,22 @@ func recordsFlusher(stop <-chan struct{}) {
 			if !dirty {
 				continue
 			}
-			// 拿一份快照再写，避免长时间持锁
 			eng.mu.Lock()
 			items := make([]MsgView, len(eng.history))
 			copy(items, eng.history)
 			eng.mu.Unlock()
-			saveRecords(items)
+			saveRecordsBuckets(items)
 		}
 	}
 }
 
-// flushRecordsNow 退出前立即落盘
+// flushRecordsNow 立刻落盘（退出、清空记录时用）
 func flushRecordsNow() {
 	eng.mu.Lock()
 	items := make([]MsgView, len(eng.history))
 	copy(items, eng.history)
 	eng.mu.Unlock()
-	saveRecords(items)
+	saveRecordsBuckets(items)
 	recMu.Lock()
 	recDirty = false
 	recMu.Unlock()
@@ -138,4 +255,3 @@ func (e *Engine) deleteRecords(ids map[string]bool) int {
 	}
 	return removed
 }
-

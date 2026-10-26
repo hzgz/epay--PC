@@ -744,7 +744,7 @@ func alipayRefreshPID(sessionID string) (string, error) {
 	upsertAlipaySession(s)
 	saveAlipaySessions()
 
-	ch := s.ChannelID
+	ch := s.ChannelFor(GetConfig().Mode)
 	if a, had := findAccount(pid); had {
 		ch = a.ChannelID
 	}
@@ -884,7 +884,7 @@ func finishQRLogin(qr *qrLogin) error {
 
 	// 同步到上报账号表
 	if pid != "" {
-		ch := s.ChannelID
+		ch := s.ChannelFor(GetConfig().Mode)
 		if a, had := findAccount(pid); had {
 			ch = a.ChannelID
 		}

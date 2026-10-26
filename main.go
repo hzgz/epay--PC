@@ -17,7 +17,7 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.50"
+	AppVersion = "1.57"
 	WeChatProc = "Weixin.exe"
 )
 
@@ -92,7 +92,7 @@ func (e *Engine) attach() bool {
 	}
 
 	if ok == 0 {
-		logError("inject", "注入失败：所有采集点都不可用")
+		logError("inject", "接入失败：请确认微信正在运行")
 		return false
 	}
 
@@ -110,7 +110,7 @@ func (e *Engine) detach() {
 			hk.Detach()
 		}
 		e.hooks = nil
-		logInfo("inject", "已卸载 hook")
+		logInfo("inject", "已断开微信")
 	}
 }
 
@@ -320,7 +320,7 @@ func (e *Engine) run() {
 		case <-recheck.C:
 			if len(e.hooks) > 0 {
 				if PidByName(WeChatProc) != e.stats.Pid {
-					logWarn("inject", "微信进程已变化，重新注入")
+					logWarn("inject", "微信进程已变化，正在重新连接")
 					e.detach()
 				}
 			} else {
@@ -405,35 +405,13 @@ func main() {
 
 	// 数据库监控：读取公众号/服务号消息（收款助手、微信支付、赞赏通知）
 	// 支持多账号同时监控：每个账号独立密钥、独立数据库连接
-	if c.DbEnabled {
-		accounts := c.EffectiveDbAccounts()
-		if len(accounts) == 0 {
-			logInfo("monitor", "数据库监控未启用（还没有配置微信账号）")
-		}
-		for _, da := range accounts {
-			acc, ok := findWxAccount(da.Wxid)
-			if !ok {
-				logWarn("monitor", "未找到微信账号 %s 的数据目录", da.Wxid)
-				continue
-			}
-			if !acc.HasBiz {
-				logWarn("monitor", "账号 %s 没有 biz_message_0.db，跳过", da.Wxid)
-				continue
-			}
-			if err := StartWxMonitor(acc.BizDB, da.Key, acc.Wxid, acc); err != nil {
-				logError("monitor", "账号 %s 监控启动失败: %v", da.Wxid, err)
-			}
-			// 消息调试用的好友/群聊实时轮询
-			if acc.MsgDB != "" {
-				if err := StartLiveMonitor(acc.Wxid, acc.MsgDB, acc.ContactDB, da.Key); err != nil {
-					logWarn("monitor", "账号 %s 实时消息监控启动失败: %v", da.Wxid, err)
-				}
-			}
-		}
-		InitDefaultWatches()
+	// 微信采集：按模式二选一（key=读库 / hook=事件推送）
+	if c.EffectiveWxMode() == "hook" {
+		startHookSource()
 	} else {
-		logInfo("monitor", "数据库监控未启用")
+		startWxMonitorsFromConfig()
 	}
+
 
 	go eng.run()
 
@@ -478,7 +456,7 @@ func main() {
 					logDebug("monitor", "运行中 扫描=%d 消息=%d 转发=%d 上报=%d 失败=%d",
 						s.Scanned, s.Parsed, s.Forwarded, s.Reported, s.Failed)
 				} else {
-					logDebug("monitor", "状态: 等待微信进程…")
+					logDebug("monitor", "等待微信启动…")
 				}
 			}
 		}

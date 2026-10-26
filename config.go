@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -50,10 +51,57 @@ type Config struct {
 
 	// 数据库读取（公众号/服务号消息）
 	DbEnabled bool        `json:"db_enabled"`  // 是否启用数据库读取
-	DbAccounts []DbAccount `json:"db_accounts"` // 多账号列表
+	// 微信采集模式："key" = 通行密钥读库（默认），"hook" = 注入 hook 接收事件
+	WxMode string `json:"wx_mode"`
+	// Hook 接收端：监听地址与 32 字节十六进制共享密钥（hook 与程序约定，DPAPI 加密存储）
+	HookListen string `json:"hook_listen"`
+	// 用户主动删光 HK 账号后不再自动绑定（否则永远删不干净，切不回密钥模式）
+	HookNoAutoBind bool `json:"hook_no_autobind"`
+	HookKey    string `json:"hook_key"`
+	// Hook 模式的账号列表，和密钥模式互不影响
+	HookAccounts []HookAccount `json:"hook_accounts"`
+	DbAccounts   []DbAccount   `json:"db_accounts"` // 多账号列表
 	// 旧版单账号字段，启动时自动并入 DbAccounts
 	DbWxid string `json:"db_wxid,omitempty"`
 	DbKey  string `json:"db_key,omitempty"`
+}
+
+// HookAccount Hook 模式下的微信账号：只认进程 + 通道，不需要数据库密钥
+type HookAccount struct {
+	Wxid      string `json:"wxid"`
+	PID       int    `json:"pid"`
+	ChannelID string `json:"channel_id"` // 兼容旧字段
+	// 接口模式各存一套通道号：切 X-Ypay / 码支付V1 不用重绑
+	ChannelIDXpay string `json:"channel_id_xpay"`
+	ChannelIDV1   string `json:"channel_id_v1"`
+	Enabled       bool   `json:"enabled"`
+}
+
+// ChannelFor 按接口模式取通道号，未单独设置时回落到通用字段
+func (h HookAccount) ChannelFor(mode string) string {
+	switch mode {
+	case "v1":
+		if x := strings.TrimSpace(h.ChannelIDV1); x != "" {
+			return x
+		}
+	case "xpay":
+		if x := strings.TrimSpace(h.ChannelIDXpay); x != "" {
+			return x
+		}
+	}
+	return strings.TrimSpace(h.ChannelID)
+}
+
+// SetChannelFor 按接口模式写入通道号，并同步旧字段
+func (h *HookAccount) SetChannelFor(mode, id string) {
+	id = strings.TrimSpace(id)
+	h.ChannelID = id
+	switch mode {
+	case "v1":
+		h.ChannelIDV1 = id
+	case "xpay":
+		h.ChannelIDXpay = id
+	}
 }
 
 // DbAccount 一个需要监控的微信账号
@@ -64,6 +112,25 @@ type DbAccount struct {
 }
 
 // EffectiveDbAccounts 返回真正要监控的账号列表，含旧字段迁移
+// EffectiveWxMode 返回规范化的采集模式，空值按 key 处理
+func (c Config) EffectiveWxMode() string {
+	if strings.TrimSpace(c.WxMode) == "hook" {
+		return "hook"
+	}
+	return "key"
+}
+
+// EffectiveHookAccounts 返回启用的 Hook 账号
+func (c Config) EffectiveHookAccounts() []HookAccount {
+	out := make([]HookAccount, 0, len(c.HookAccounts))
+	for _, a := range c.HookAccounts {
+		if a.Wxid != "" && a.Enabled {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func (c Config) EffectiveDbAccounts() []DbAccount {
 	out := make([]DbAccount, 0, len(c.DbAccounts)+1)
 	seen := map[string]bool{}
@@ -220,6 +287,7 @@ func encryptConfig(c *Config) {
 	c.XPaySecret = mustEncrypt(c.XPaySecret)
 	c.YjkToken = mustEncrypt(c.YjkToken)
 	c.DbKey = mustEncrypt(c.DbKey)
+	c.HookKey = mustEncrypt(c.HookKey)
 	for i := range c.DbAccounts {
 		c.DbAccounts[i].Key = mustEncrypt(c.DbAccounts[i].Key)
 	}
@@ -230,6 +298,7 @@ func decryptConfig(c *Config) {
 	c.XPaySecret = mustDecrypt(c.XPaySecret)
 	c.YjkToken = mustDecrypt(c.YjkToken)
 	c.DbKey = mustDecrypt(c.DbKey)
+	c.HookKey = mustDecrypt(c.HookKey)
 	migrated := false
 	for i := range c.DbAccounts {
 		if isEncrypted(c.DbAccounts[i].Key) {

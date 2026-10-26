@@ -76,8 +76,8 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
 .kpi .arw{color:#D8DCE1;font-size:16px;}
 
 /* 卡片 */
-.card{background:var(--card);border-radius:12px;padding:18px 20px;margin-bottom:14px;}
-.card .head{margin-bottom:14px;display:flex;flex-wrap:wrap;align-items:flex-start;gap:0 12px;}
+.card{background:var(--card);border-radius:12px;padding:12px 16px;margin-bottom:8px;}
+.card .head{margin-bottom:8px;display:flex;flex-wrap:wrap;align-items:flex-start;gap:0 12px;}
 .card .head h2{font-size:16px;font-weight:600;color:var(--text);flex:0 0 auto;}
 .card .head p{font-size:13.5px;color:var(--sub);margin-top:5px;line-height:1.6;flex:0 0 100%;}
 .card .head .more{font-size:13.5px;color:var(--blue);cursor:pointer;margin-left:auto;flex:0 0 auto;}
@@ -120,17 +120,17 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
 .tag{display:inline-block;font-size:13px;padding:2px 0;color:var(--green-dark);font-weight:500;white-space:nowrap;}
 .tag.fail{color:var(--red);}
 .tag.skip{color:var(--hint);}
-.empty{text-align:center;padding:44px 0;color:var(--hint);font-size:14px;}
+.empty{text-align:center;padding:22px 0;color:var(--hint);font-size:14px;}
 
 /* 表单 */
-.field{margin-bottom:16px;}
+.field{margin-bottom:8px;}
 .field label{display:block;font-size:14px;color:var(--sub);margin-bottom:8px;}
 .field input{width:100%;border:1px solid #D8DCE2;border-radius:7px;padding:10px 13px;font-size:15px;
   font-family:inherit;outline:none;background:#FAFBFC;color:var(--text);}
 .field input:focus{border-color:var(--green);background:#fff;}
-.field .hint{font-size:12.5px;color:var(--hint);margin-top:7px;line-height:1.6;}
+.field .hint{font-size:12.5px;color:var(--hint);margin-top:5px;line-height:1.5;}
 .radio-row{display:flex;gap:12px;flex-wrap:wrap;}
-.radio{flex:1;min-width:150px;border:1px solid #D8DCE2;border-radius:8px;padding:12px 14px;cursor:pointer;background:#FAFBFC;}
+.radio{flex:1;min-width:150px;border:1px solid #D8DCE2;border-radius:8px;padding:8px 11px;cursor:pointer;background:#FAFBFC;}
 .radio.on{border-color:var(--green);background:var(--green-bg);}
 .radio .t{font-size:14.5px;font-weight:500;color:var(--text);}
 .radio.on .t{color:var(--green-dark);}
@@ -452,7 +452,7 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
 
       <!-- 配置 -->
       <div class="page" id="page-settings">
-        <div class="card" style="display:flex;align-items:center;gap:16px;padding:14px 18px">
+        <div class="card" style="display:flex;align-items:center;gap:16px;padding:10px 16px">
           <span style="font-size:15px;font-weight:600;flex-shrink:0;white-space:nowrap">接口模式选择</span>
           <select id="modeSelect" class="sel" style="flex:1;min-width:0">
             <option value="none">请选择接口模式</option>
@@ -502,8 +502,14 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
         </div>
 
         <div class="card">
-          <div class="head"><h2>微信</h2></div>
-          <div class="field"><label>微信程序路径</label><input id="wechat_exe"></div>
+          <div class="field" style="margin-bottom:8px"><label>运行模式</label></div>
+          <div class="radio-row" id="wxModeRow">
+            <div class="radio" data-wxmode="key"><div class="t">不懂得</div>
+              <div class="d">懂得一定懂</div></div>
+            <div class="radio" data-wxmode="hook"><div class="t">不知道</div>
+              <div class="d">知道不知道随缘</div></div>
+          </div>
+          <div class="field" style="margin-top:14px;margin-bottom:8px"><label>微信程序路径</label><input id="wechat_exe"></div>
           <div class="hint">微信重启后会自动重新连接</div>
         </div>
 
@@ -636,8 +642,10 @@ body{font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;backgr
     </div>
     <div style="padding:18px 20px">
       <div style="font-size:13px;color:var(--sub);margin-bottom:14px" id="bdWxid">—</div>
+      <div class="hint" id="bdModeHint" style="margin-bottom:10px"></div>
       <div class="field" style="margin:0"><label>通道 ID</label>
-        <input id="bdChannel" placeholder="后台通道 ID，例如 13"></div>
+        <input id="bdChannel" placeholder="后台通道 ID，例如 13">
+        <div class="hint">每个平台各存一套：X-Ypay 与码支付V1 的通道号不同，切换平台不用重填</div></div>
     </div>
     <div style="padding:0 20px 18px;display:flex;gap:10px;justify-content:flex-end">
       <button class="btn ghost" id="bdCancel">取消</button>
@@ -951,8 +959,9 @@ async function refresh(){
   try{
     const s = await (await fetch('/api/status')).json();
 
-    $('#dot').className='dot '+(s.attached?'ok':'bad');
-    $('#status').textContent = s.attached?`已连接微信 · PID ${s.pid}`
+    const live = !!s.live || !!s.attached;
+  $('#dot').className='dot '+(live?'ok':'bad');
+    $('#status').textContent = (s.live||s.attached)?(s.wx_mode==='hook'?`已连接微信 · HK · PID ${s.pid}`:`已连接微信 · PID ${s.pid}`)
       :(s.wechat_running?'微信已启动，未连接':'等待微信启动');
 
     $('#kToday').textContent = yuan(s.today_sum);
@@ -971,7 +980,7 @@ async function refresh(){
     $('#aWxOn').textContent = wxOn;
     const offEl = $('#aWxOff'); if(offEl) offEl.textContent = wxList.length - wxOn;
     const wb=$('#aWxBadge');
-    wb.className='badge'+(s.attached?' on':''); wb.innerHTML=`<span class="d"></span>${s.attached?'运行中':'未运行'}`;
+    wb.className='badge'+((s.live||s.attached)?' on':''); wb.innerHTML=`<span class="d"></span>${(s.live||s.attached)?'运行中':'未运行'}`;
 
     const aliAll = s.ali_accounts||0, aliOn = s.ali_online||0;
     $('#aAliNum').textContent = aliAll;
@@ -992,7 +1001,7 @@ async function refresh(){
     $('#aLsScan').textContent = s.scanned||0;
     $('#aLsMsg').textContent = s.parsed||0;
     const lb=$('#aLsBadge');
-    lb.className='badge'+(s.attached?' on':''); lb.innerHTML=`<span class="d"></span>${s.attached?'监听中':'未启动'}`;
+    lb.className='badge'+((s.live||s.attached)?' on':''); lb.innerHTML=`<span class="d"></span>${(s.live||s.attached)?'监听中':'未启动'}`;
 
     // 收款记录页和首页「实时事件」共用同一份数据
     const recv = await loadLogs(true);
@@ -1008,6 +1017,8 @@ async function loadConfig(){
   $('#yjkBox').style.display=cfg.mode==='xpay'?'':'none';
   $('#v1Box').style.display=cfg.mode==='v1'?'':'none';
   $$('#filterRow .radio').forEach(x=>x.classList.toggle('on',(cfg.forward_all?'all':'kw')===x.dataset.filter));
+  const wm = cfg.wx_mode === 'hook' ? 'hook' : 'key';
+  $$('#wxModeRow .radio').forEach(x=>x.classList.toggle('on', x.dataset.wxmode===wm));
   ['xpay_site','xpay_pid','xpay_secret','v1_site','v1_secret','wechat_exe','log_level'].forEach(k=>{
     const el=$('#'+k); if(el) el.value=cfg[k]||''; });
   $('#keywords').value=(cfg.keywords||[]).join(',');
@@ -1017,7 +1028,8 @@ async function loadConfig(){
 async function doSaveConfig(silent){
   const mode=$('#modeSelect').value||'none';
   const filter=($('#filterRow .radio.on')||{dataset:{}}).dataset.filter||'all';
-  const body={...cfg,mode,forward_all:filter==='all',
+  const wxMode=(($('#wxModeRow .radio.on')||{dataset:{}}).dataset.wxmode)||'key';
+  const body={...cfg,mode,forward_all:filter==='all',wx_mode:wxMode,
     xpay_site:$('#xpay_site').value.trim(),xpay_pid:$('#xpay_pid').value.trim(),
     xpay_secret:$('#xpay_secret').value.trim(),v1_site:$('#v1_site').value.trim(),
     v1_secret:$('#v1_secret').value.trim(),
@@ -1026,12 +1038,47 @@ async function doSaveConfig(silent){
   try{
     const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(r.ok){ cfg=body; if(!silent) toast('已保存'); return true; }
-    if(!silent) toast('保存失败');
+    let reason='';
+    try{ const t=await r.text(); const j=JSON.parse(t); reason=j.err||j.error||t; }catch(e){}
+    if(!silent) toast(reason ? ('保存失败：'+reason) : '保存失败');
+    if(r.status===409){ await loadConfig(); }  // 被拒后回到真实状态
+    return false;
   }catch(e){
     if(!silent) toast('保存失败：'+e.message);
   }
   return false;
 }
+$$('#wxModeRow .radio').forEach(el=>{
+  el.onclick=async ()=>{
+    const want = el.dataset.wxmode;
+    const cur  = (cfg && cfg.wx_mode) || 'key';
+    if(want === cur){                       // 没改，随便点
+      $$('#wxModeRow .radio').forEach(x=>x.classList.toggle('on', x===el));
+      return;
+    }
+    // 切换前必须先删掉当前模式的账号，否则两套账号/记录会混用。
+    // 这里先查一次实时状态，不满足就直接拦下，不给"选了但存不进去"的错觉。
+    let blocked = '';
+    try{
+      const st = await (await fetch('/api/wx/mode')).json();
+      const curCount = cur === 'hook' ? (st.hook_accounts||[]).length
+                                      : (st.key_accounts||[]).length;
+      if(curCount > 0){
+        blocked = (cur === 'hook' ? 'HK' : '通行密钥') + '模式还有 ' + curCount +
+                  ' 个微信账号，请先在「微信账号」页删除后再切换';
+      }
+    }catch(e){ blocked = '校验失败：' + e.message; }
+
+    if(blocked){
+      toast(blocked);
+      $$('#wxModeRow .radio').forEach(x=>x.classList.toggle('on', x.dataset.wxmode===cur));
+      return;
+    }
+    $$('#wxModeRow .radio').forEach(x=>x.classList.remove('on'));
+    el.classList.add('on');
+    toast('已选择' + (want==='hook'?'不知道':'不懂得') + '，点「保存设置」生效');
+  };
+});
 $('#btnSave').onclick=()=>{ doSaveConfig(false); };
 $('#btnRefresh').onclick=()=>{refresh();toast('已刷新');};
 $('#btnReinject').onclick=async()=>{toast('正在重连…');await fetch('/api/reinject',{method:'POST'});setTimeout(refresh,900);};
@@ -1080,7 +1127,7 @@ let dbgBaseline=0;   // 点「开始捕获」的时刻，之后进来的消息�
 function dbgRender(){
   const box=$('#dbgList');
   if(!dbgItems.length){
-    box.innerHTML = `<div style="text-align:center;padding:120px 0;color:var(--hint);font-size:13px">
+    box.innerHTML = `<div style="text-align:center;padding:56px 0;color:var(--hint);font-size:13px">
       <div style="font-size:30px;margin-bottom:14px">▤</div>
       正在等待新消息…<br><span style="font-size:12px;color:var(--hint)">发一条微信或用手机收款，几秒内会出现在这里</span></div>`;
     return;
@@ -1188,11 +1235,11 @@ function dbgBindAcctSelect(){
 // 放到 800ms 轮询里会拖垮 WCDB，所以它只在「开始捕获」时调一次。
 async function dbgFetchLive(){
   const wxids = await dbgWxids();
-  if(!wxids.length) return new Map();
-  const bags = await Promise.all(wxids.map(w => {
+  // Hook 模式没有账号库，但 /api/debug 里有实时事件，不能因为没账号就提前返回
+  const bags = wxids.length ? await Promise.all(wxids.map(w => {
     const q = encodeURIComponent(w);
     return fetch('/api/debug/live?wxid='+q).then(x=>x.json()).catch(()=>({}));
-  }));
+  })) : [];
   const ghLive = await fetch('/api/debug').then(x=>x.json()).catch(()=>[]);
 
   // 同一条消息可能同时存在于两个账号的库里（互相聊天时），
@@ -1321,6 +1368,10 @@ function dbgCurJSON(){
 function dbgOpenModal(){
   $('#dbgMask').style.display='flex';
   dbgOpen=true;
+  // Hook 模式没有账号库，隐藏账号下拉，直接看实时事件
+  const hookMode = ((cfg && cfg.wx_mode)||'key') === 'hook';
+  const accSel = $('#dbgAcct');
+  if(accSel) accSel.style.display = hookMode ? 'none' : '';
   dbgBindAcctSelect();
   // 打开就自动开始捕获，不用用户再点一次
   if(!dbgRun){ setTimeout(()=>{ document.getElementById('dbgToggle').click(); }, 120); }
@@ -1409,8 +1460,64 @@ let authorTaps = 0, authorTapTimer = null;
 })();
 
 let addWxPick = '';
+let bdHookTarget = '';
+let bdHookPid = 0;
+let bdHookChannel = '';
+let addWxPID = 0;
+
+// Hook 模式的「添加账号」：只选微信进程 + 通道，不要密钥
+async function addWxHook(){
+  $('#addWxRoot').textContent = 'HK 模式：选择要绑定的微信进程';
+  const keyField = $('#addWxKey') && $('#addWxKey').closest('.field');
+  if(keyField) keyField.style.display = 'none';
+  if($('#addWxGetKey')) $('#addWxGetKey').style.display = 'none';
+  const chField = $('#addWxChannel') && $('#addWxChannel').closest('.field');
+  if(chField) chField.style.display = '';
+  $('#addWxList').innerHTML = '<div class="empty" style="padding:22px 0">读取微信进程…</div>';
+  try{
+    const r = await (await fetch('/api/wx/processes')).json();
+    const arr = r.processes || [];
+    if(!arr.length){
+      $('#addWxList').innerHTML = '<div class="empty" style="padding:22px 0">没有检测到微信进程</div>';
+      return;
+    }
+    $('#addWxList').innerHTML = arr.map(p=>`
+      <div data-hookpid="${p.pid}" style="display:flex;align-items:center;gap:12px;padding:11px 14px;
+        border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer">
+        <div style="width:34px;height:34px;border-radius:9px;background:var(--green-bg);color:var(--green);
+          display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">⚡</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13.5px;font-weight:600">微信进程 PID ${p.pid}</div>
+          <div style="font-size:11.5px;color:var(--sub);margin-top:3px">${p.bound?'已绑定':'未绑定'}</div>
+        </div>
+      </div>`).join('');
+    const items = $('#addWxList').querySelectorAll('[data-hookpid]');
+    const pick = (el)=>{
+      $('#addWxList').querySelectorAll('[data-hookpid]').forEach(x=>{
+        x.style.borderColor='var(--line)'; x.style.background='#fff';
+      });
+      el.style.borderColor='var(--green)'; el.style.background='var(--green-bg)';
+      addWxPID = Number(el.dataset.hookpid);
+      addWxPick = 'pid:' + addWxPID;
+      $('#addWxForm').style.display = 'block';
+      $('#addWxOk').disabled = false;
+      $('#addWxMsg').style.display = 'none';
+    };
+    items.forEach(el=>{ el.onclick = ()=>pick(el); });
+    if(items.length) pick(items[0]);   // 自动选中，少一步点击
+  }catch(e){
+    $('#addWxList').innerHTML = '<div class="empty" style="padding:22px 0">读取进程失败</div>';
+  }
+}
+
 async function addWx(){
   addWxPick = '';
+  addWxPID = 0;
+  // 每次打开都恢复密钥模式的字段可见性
+  const kf = $('#addWxKey') && $('#addWxKey').closest('.field');
+  if(kf) kf.style.display = '';
+  const cf = $('#addWxChannel') && $('#addWxChannel').closest('.field');
+  if(cf) cf.style.display = '';
   $('#addWxMask').style.display = 'flex';
   $('#addWxForm').style.display = 'none';
   $('#addWxMsg').style.display = 'none';
@@ -1419,6 +1526,8 @@ async function addWx(){
   $('#addWxChannel').value = '';
   $('#addWxKeyHint').style.display = 'none';
   $('#addWxKeyHint').textContent = '';
+  if((cfg.wx_mode||'key')==='hook'){ return addWxHook(); }
+
   $('#addWxList').innerHTML = '<div class="empty" style="padding:22px 0">扫描中…</div>';
   $('#addWxRoot').textContent = '正在扫描本机微信目录…';
   try{
@@ -1522,9 +1631,39 @@ $('#addWxGetKey').onclick = async ()=>{
 $('#addWxMask').onclick = (e)=>{ if(e.target.id==='addWxMask') $('#addWxMask').style.display='none'; };
 
 $('#addWxOk').onclick = async ()=>{
+  if(!addWxPick){
+    const first = document.querySelector('#addWxList [data-hookpid]');
+    if(first){ first.click(); }
+  }
   if(!addWxPick) return;
   const key = $('#addWxKey').value.trim();
   const ch = $('#addWxChannel').value.trim();
+
+  // Hook 模式：只存进程与通道，不校验密钥
+  if((cfg.wx_mode||'key')==='hook'){
+    const m2 = $('#addWxMsg');
+    m2.style.display='block'; m2.style.color='var(--sub)'; m2.textContent='正在保存…';
+    $('#addWxOk').disabled = true;
+    try{
+      const r2 = await (await fetch('/api/wx/hook/account',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({pid: addWxPID, channel_id: ch})
+      })).json();
+      if(r2.ok){
+        m2.style.color='var(--green)'; m2.textContent='已绑定微信进程 ' + addWxPID;
+        await refresh();
+        setTimeout(()=>{ $('#addWxMask').style.display='none'; }, 800);
+      }else{
+        m2.style.color='var(--red)'; m2.textContent='保存失败';
+        $('#addWxOk').disabled = false;
+      }
+    }catch(e){
+      m2.style.color='var(--red)'; m2.textContent='请求失败：'+e;
+      $('#addWxOk').disabled = false;
+    }
+    return;
+  }
+
   const msg = $('#addWxMsg');
   msg.style.display = 'block';
   if(key.length !== 64 || !/^[0-9a-fA-F]+$/.test(key)){
@@ -2010,7 +2149,9 @@ async function refreshAlipay(){
         </div>
         <div style="padding:14px 20px;border-right:1px solid var(--line)">
           <div style="font-size:12.5px;color:var(--sub);margin-bottom:6px">通道 ID</div>
-          <div style="font-size:14.5px">${esc(a.channel_id || '未绑定')}</div>
+          <div style="font-size:14.5px">${esc(a.channel_id || '未绑定')}${
+      (a.channel_id_xpay && a.channel_id_v1 && a.channel_id_xpay !== a.channel_id_v1)
+        ? `<span style="font-size:11.5px;color:var(--sub);margin-left:6px">X ${esc(a.channel_id_xpay)} / V1 ${esc(a.channel_id_v1)}</span>` : ''}</div>
         </div>
         <div style="padding:14px 20px">
           <div style="font-size:12.5px;color:var(--sub);margin-bottom:6px">登录 Cookie</div>
@@ -2329,6 +2470,62 @@ let editingWxid = '';
 
 async function refreshAccounts(){
   try{
+    // 模式以服务端为准（cfg 可能在页面初始化完成前还没加载）
+    const mi = await (await fetch('/api/wx/mode')).json();
+    if(mi.mode === 'hook'){
+      const m = mi;
+      const hooks = m.hook_accounts || [];
+      $('#accCount').textContent = hooks.length + ' 个';
+      const box = $('#accList2');
+      if(!hooks.length){
+        box.innerHTML = '<div class="empty">暂无账号，点击右上角添加</div>';
+        return;
+      }
+      const dllPid = (m.dll && m.dll.injected_pid) || 0;
+      box.innerHTML = hooks.map(a=>{
+        const live = !!(m.hook && m.hook.running) && dllPid === a.pid;
+        return `
+        <div style="display:flex;align-items:center;gap:14px;padding:15px 18px;border-bottom:1px solid var(--line)">
+          <div style="width:44px;height:44px;border-radius:11px;background:${live?'var(--green)':'#B9BDC6'};color:#fff;
+            display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">✆</div>
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span style="font-size:15.5px;font-weight:600">微信进程 PID ${a.pid}</span>
+              <span class="badge${live?' on':''}"><span class="d"></span>${live?'运行中':'已离线'}</span>
+              ${a.channel_id?`<span class="badge on"><span class="d"></span>通道 ${esc(a.channel_id)}</span>`:'<span class="badge"><span class="d"></span>未绑定通道</span>'}
+            </div>
+          </div>
+          <button class="btn ghost" data-hookstate="${esc(a.wxid)}" data-on="${a.enabled?1:0}" style="height:32px;font-size:13px">${a.enabled?'停止':'启动'}</button>
+          <button class="btn ghost" data-hookbind="${esc(a.wxid)}" style="height:32px;font-size:13px">绑定通道ID</button>
+          <button class="btn ghost" data-hookdel="${esc(a.wxid)}" style="height:32px;font-size:13px;color:var(--red);border-color:var(--red)">删除</button>
+        </div>`;}).join('');
+      box.querySelectorAll('[data-hookstate]').forEach(b=>{
+        b.onclick=async ()=>{
+          const on = b.dataset.on !== '1';
+          await fetch('/api/wx/hook/state',{method:'POST',headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({wxid: b.dataset.hookstate, enabled: on})});
+          toast(on?'已启动':'已停止'); refreshAccounts(); refresh();
+        };
+      });
+      box.querySelectorAll('[data-hookdel]').forEach(b=>{
+        b.onclick=async ()=>{
+          if(!confirm('删除这个 HK 账号？')) return;
+          await fetch('/api/wx/hook/remove?wxid='+encodeURIComponent(b.dataset.hookdel), {method:'POST'});
+          toast('已删除'); refreshAccounts(); refresh();
+        };
+      });
+      box.querySelectorAll('[data-hookbind]').forEach(b=>{
+        b.onclick=()=>{
+          bdHookTarget = b.dataset.hookbind;
+          const acc = hooks.find(x=>x.wxid===b.dataset.hookbind) || {};
+          bdHookPid = acc.pid || 0;
+          bdHookChannel = acc.channel_id || '';
+          openBind(acc.wxid);   // 复用通道绑定弹窗
+        };
+      });
+      return;
+    }
+
     const arr = await (await fetch('/api/accounts')).json() || [];
     accountsCache = arr;
     $('#accCount').textContent = arr.length + ' 个';
@@ -2359,10 +2556,17 @@ async function refreshAccounts(){
             <span class="mono">${esc(a.wxid)}</span> · 64 位微信适配${detail}${a.note?' · '+esc(a.note):''}
           </div>
         </div>
+        <button class="btn ghost" data-state="${esc(a.wxid)}" data-on="${a.enabled?1:0}" style="height:32px;font-size:13px">${a.enabled?'停止':'启动'}</button>
         <button class="btn ghost" data-bind="${esc(a.wxid)}" style="height:32px;font-size:13px">绑定通道ID</button>
         <button class="btn ghost" data-del="${esc(a.wxid)}" style="height:32px;font-size:13px;color:var(--red);border-color:var(--red)">删除</button>
       </div>`;
     }).join('');
+    box.querySelectorAll('[data-state]').forEach(b=>b.onclick=async ()=>{
+      const on = b.dataset.on !== '1';
+      await fetch('/api/accounts/state',{method:'POST',headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({wxid: b.dataset.state, enabled: on})});
+      toast(on?'已启动':'已停止'); refreshAccounts(); refresh();
+    });
     box.querySelectorAll('[data-bind]').forEach(b=>b.onclick=()=>openBind(b.dataset.bind));
     box.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delAccount(b.dataset.del));
   }catch(e){}
@@ -2382,7 +2586,15 @@ function openBind(wxid){
   editingWxid = wxid;
   const a = accountsCache.find(x=>x.wxid===wxid) || {wxid};
   $('#bdWxid').textContent = (a.nick ? a.nick + ' · ' : '') + wxid;
-  $('#bdChannel').value = a.channel_id || '';
+  const modeNow = (cfg && cfg.mode) || 'xpay';
+  const chNow = modeNow === 'v1' ? (a.channel_id_v1 || '') : (a.channel_id_xpay || '');
+  // HK 账号的通道存在 hook_accounts 里，优先用它回显
+  $('#bdChannel').value = (bdHookTarget && bdHookTarget === a.wxid)
+    ? bdHookChannel : (chNow || a.channel_id || '');
+  bdHookTarget = (bdHookTarget && bdHookTarget === a.wxid) ? bdHookTarget : '';
+  const mh = $('#bdModeHint');
+  if(mh) mh.textContent = '当前平台：' + (modeNow === 'v1' ? '码支付V1' : 'X-Ypay')
+    + '（保存只改这个平台的通道号）';
   $('#bdMask').style.display = 'flex';
   setTimeout(()=>$('#bdChannel').focus(), 80);
 }
@@ -2390,6 +2602,14 @@ function openBind(wxid){
 $('#bdX').onclick = $('#bdCancel').onclick = ()=>{ $('#bdMask').style.display='none'; };
 $('#bdMask').onclick = (e)=>{ if(e.target.id==='bdMask') $('#bdMask').style.display='none'; };
 $('#bdSave').onclick = async ()=>{
+  // Hook 账号：通道写回 hook_accounts（按进程绑定）
+  if(bdHookTarget && editingWxid === bdHookTarget){
+    const rr = await fetch('/api/wx/hook/account',{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({wxid: editingWxid, pid: bdHookPid, channel_id: $('#bdChannel').value.trim()})});
+    if(rr.ok){ $('#bdMask').style.display='none'; bdHookTarget=''; toast('通道已绑定'); refreshAccounts(); }
+    else toast('保存失败');
+    return;
+  }
   const old = accountsCache.find(x=>x.wxid===editingWxid) || {wxid:editingWxid};
   const body = {
     wxid: editingWxid,
@@ -2411,7 +2631,7 @@ $('#bdChannel').addEventListener('keydown', e=>{ if(e.key==='Enter') $('#bdSave'
 function lvlClass(l){ return l==='ERROR'?'fail':(l==='WARN'?'warn':(l==='DEBUG'?'skip':'ok')); }
 const LVL_COLOR = {ERROR:'#D92D20',WARN:'#B86E00',INFO:'#1256D0',DEBUG:'#6B7482'};
 const LVL_CN = {ERROR:'错误',WARN:'警告',INFO:'信息',DEBUG:'调试'};
-const MOD_CN = {monitor:'消息监听',callback:'上报回调',xpay:'X-Ypay心跳',inject:'程序接入',config:'配置',system:'系统'};
+const MOD_CN = {monitor:'消息监听',callback:'上报回调',xpay:'X-Ypay心跳',inject:'程序接入',config:'配置',system:'系统',hook:'消息服务',livemsg:'消息监听'};
 
 async function refreshLogs(){
   const lv = $('#lgLevel').value, md = $('#lgModule').value;
@@ -2449,9 +2669,10 @@ async function refreshEnv(){
     const set=(id,txt,cls)=>{ const el=$('#'+id); if(!el) return; el.textContent=txt;
       el.className='v'+(cls?' '+cls:''); };
 
-    set('envMonitor', s.attached?'正常':'未连接', s.attached?'ok':'bad');
+    const live = !!s.live || !!s.attached;
+  set('envMonitor', live?'正常':'未连接', live?'ok':'bad');
     set('envProgram', s.wechat_running?'正常':'待启动', s.wechat_running?'ok':'warn');
-    set('envNotify',  s.attached?'正常':'未启动', s.attached?'ok':'warn');
+    set('envNotify',  live?'正常':'未启动', live?'ok':'warn');
     set('envCallback', s.mode==='none'?'未配置':'正常', s.mode==='none'?'warn':'ok');
     set('envCPU',     (si.cpu_pct||0).toFixed(0)+'%', (si.cpu_pct||0)>70?'bad':'');
     set('envMem',     (si.mem_used_gb||0).toFixed(1)+' GB / '+(si.mem_total_gb||0).toFixed(1)+' GB',

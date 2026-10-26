@@ -1,4 +1,4 @@
-# 打包脚本：混淆编译 + 生成完整性校验 + 打 zip
+﻿# 打包脚本：混淆编译 + 生成完整性校验 + 打 zip
 #
 # 用法：
 #   .\build.ps1              编译当前版本
@@ -65,6 +65,8 @@ Copy-Item "$dir\EasyMonitorPC.exe" "$stage\" -Force
 Copy-Item "$dir\integrity.dat" "$stage\" -Force
 Copy-Item "$dir\native\WCDB.dll" "$stage\native\" -Force
 Copy-Item "$dir\native\wxtool_wcdb.dll" "$stage\native\" -Force
+$hookDll = Get-ChildItem "$dir\native\easymon_hook*.dll" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($hookDll) { Copy-Item $hookDll.FullName "$stage\native\easymon_hook.dll" -Force }
 Compress-Archive -Path "$stage\*" -DestinationPath "$rel\EasyMonitorPC-v$Version-win64.zip" -Force
 Remove-Item $stage -Recurse -Force
 
@@ -77,6 +79,7 @@ Copy-Item "$dir\go.mod", "$dir\go.sum" "$src\" -Force -ErrorAction SilentlyConti
 Copy-Item "$dir\ui" "$src\ui" -Recurse -Force
 Copy-Item "$dir\native\WCDB.dll" "$src\native\" -Force
 Copy-Item "$dir\native\wxtool_wcdb.dll" "$src\native\" -Force
+if (Test-Path "$dir\native\hookdll.c") { Copy-Item "$dir\native\hookdll.c" "$src\native\" -Force }
 Compress-Archive -Path "$src" -DestinationPath "$rel\EasyMonitorPC-v$Version-src.zip" -Force
 Remove-Item "$env:TEMP\src_$Version" -Recurse -Force
 

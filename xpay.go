@@ -102,7 +102,7 @@ func buildXPayParams(m *ChatMsg, acc Account, secret string, now time.Time) map[
 		"amount":             fmt.Sprintf("%d", xpayAmountCents(m.Amount)),
 		"pay_type":           xpayPayType(acc),
 		"channel_code":       strings.TrimSpace(acc.ChannelCode),
-		"channel_account_id": strings.TrimSpace(acc.ChannelID),
+		"channel_account_id": acc.ChannelFor("xpay"),
 		"coll_user":          m.To,
 		"pay_time":           payTime,
 		"timestamp":          fmt.Sprintf("%d", now.Unix()),
@@ -125,7 +125,7 @@ func sendXPay(m *ChatMsg, c Config) ReportResult {
 	if !ok {
 		return ReportResult{Err: fmt.Sprintf("收款账号 %s 未绑定", short(m.To))}
 	}
-	chAccID := strings.TrimSpace(acc.ChannelID)
+	chAccID := acc.ChannelFor("xpay")
 	chCode := strings.TrimSpace(acc.ChannelCode)
 	if chAccID == "" {
 		return ReportResult{Err: fmt.Sprintf("账号 %s 未填通道 ID", short(m.To))}
@@ -330,6 +330,22 @@ func xpayHeartbeatRound() {
 		name = "易监控PC"
 	}
 	accs := accountsCopy()
+	// HK 模式的账号不在账号表里，心跳要把它一起带上，否则平台看不到在线
+	if GetConfig().EffectiveWxMode() == "hook" {
+		have := map[string]bool{}
+		for _, a := range accs {
+			have[a.Wxid] = true
+		}
+		for _, h := range GetConfig().EffectiveHookAccounts() {
+			if h.Enabled && !have[h.Wxid] {
+				accs = append(accs, Account{
+					Type: "wechat", Wxid: h.Wxid,
+					ChannelID: h.ChannelID, ChannelIDXpay: h.ChannelIDXpay, ChannelIDV1: h.ChannelIDV1,
+					ChannelCode: "jk_wechat_pc", Enabled: true,
+				})
+			}
+		}
+	}
 	for _, a := range accs {
 		if !a.Enabled {
 			continue
@@ -341,7 +357,7 @@ func xpayHeartbeatRound() {
 				short(a.Wxid), a.ChannelID)
 			continue
 		}
-		cid := strings.TrimSpace(a.ChannelID)
+		cid := a.ChannelFor("xpay")
 		if cid == "" {
 			// 没绑通道就发心跳，等于给平台发一个空通道号：
 			// 轻则 400，重则可能被当成默认通道，把状态记到别人头上。

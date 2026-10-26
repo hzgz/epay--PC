@@ -21,7 +21,8 @@ import (
 var uiHTML []byte
 
 type StatusResp struct {
-	Attached      bool   `json:"attached"`
+	Attached      bool   `json:"attached"` // 数据库/日志监控是否在跑
+	Live          bool   `json:"live"`     // 当前模式是否在工作（key=attached，hook=接收端+注入）
 	Pid           uint32 `json:"pid"`
 	WechatRunning bool   `json:"wechat_running"`
 	Scanned       int    `json:"scanned"`
@@ -46,6 +47,7 @@ type StatusResp struct {
 	Points []PointStat `json:"points"`
 
 	// 多账号监控状态
+	WxMode     string            `json:"wx_mode"`
 	WxAccounts []WxMonitorStatus `json:"wx_accounts"`
 
 	// 支付宝账号（总览页「账户状态总览」那张卡用）
@@ -80,6 +82,10 @@ type MsgView struct {
 	CallbackStatus string `json:"callback_status"` // 已回调 / 回调失败 / 未上报
 	CallbackBody   string `json:"callback_body"`   // 回调响应全文
 	CallbackURL    string `json:"callback_url"`    // 实际请求地址
+
+	// 采集来源：模式与账号（记录按这两项分目录存放）
+	WxMode  string `json:"wx_mode"`
+	Account string `json:"account"`
 }
 
 func (e *Engine) snapshot() StatusResp {
@@ -142,12 +148,22 @@ func (e *Engine) snapshot() StatusResp {
 	}
 	live := e.hooks != nil || dbLive
 	pid := e.stats.Pid
+	if pid == 0 && GetConfig().EffectiveWxMode() == "hook" {
+		if main := MainWeChatPid(); main != 0 {
+			pid = main
+		} else if ip := injectedPid; ip != 0 {
+			pid = ip
+		}
+	}
 	if pid == 0 && dbLive {
 		pid = PidByName(WeChatProc)
 	}
 
 	return StatusResp{
+		WxMode: GetConfig().EffectiveWxMode(),
 		Attached:      live,
+		Live:          live || (GetConfig().EffectiveWxMode() == "hook" && hookRunning()),
+
 		Pid:           pid,
 		WechatRunning: PidByName(WeChatProc) != 0,
 		Scanned:       dbRounds + e.stats.Scanned,
@@ -175,6 +191,7 @@ func (e *Engine) snapshot() StatusResp {
 
 // DebugItem 调试用：金额识别之前的完整消息结构
 type DebugItem struct {
+	Mode     string  `json:"mode"` // key / hook，按模式分开看
 	Seq      int     `json:"seq"`
 	From     string  `json:"from"`
 	To       string  `json:"to"`
@@ -260,6 +277,7 @@ func (e *Engine) addDebug(m *ChatMsg, rawLen int) {
 	}
 	e.debugSeq++
 	it := DebugItem{
+		Mode: GetConfig().EffectiveWxMode(),
 		PayType: ExtractPayType(m.Display),
 		Seq: e.debugSeq, From: m.From, To: m.To, Content: m.Content,
 		Display: m.Display, Time: m.Time, MsgID: m.MsgID, Amount: m.Amount,
@@ -314,7 +332,13 @@ func (e *Engine) addHistoryEx(m *ChatMsg, reported bool, errMsg string, res *Rep
 		cbBody = res.Body
 	}
 
+	mode := GetConfig().EffectiveWxMode()
+	if platform == "支付宝" {
+		mode = "alipay"
+	}
 	v := MsgView{
+		WxMode:  mode,
+		Account: m.To,
 		From: m.From, To: m.To, Content: m.Content, RawText: m.RawText, Display: m.Display,
 		Time: m.Time, RawID: fmt.Sprintf("%d", m.MsgID), Amount: m.Amount,
 		Reported: reported, Err: errMsg,
@@ -373,6 +397,22 @@ func startServer() (int, error) {
 			fmt.Sscanf(v, "%d", &limit)
 		}
 		items := eng.historyCopy(limit)
+		// 记录按采集模式隔离：默认只看当前模式，?mode=all 才合并
+		{
+			want := q.Get("mode")
+			if want == "" {
+				want = GetConfig().EffectiveWxMode()
+			}
+			if want != "all" {
+				keep := make([]MsgView, 0, len(items))
+				for _, v := range items {
+					if v.WxMode == "" || v.WxMode == want || v.WxMode == "alipay" {
+						keep = append(keep, v)
+					}
+				}
+				items = keep
+			}
+		}
 		// amount_only=1：只给带金额的（收款记录页用，聊天消息不进列表）
 		if q.Get("amount_only") == "1" {
 			filtered := make([]MsgView, 0, len(items))
@@ -390,18 +430,66 @@ func startServer() (int, error) {
 		json.NewEncoder(w).Encode(items)
 	})
 
+	const secretMask = "******"
+
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			// 按要求回传明文，方便核对；仍是本机回环接口，只对本机可读
+			c := GetConfig()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(c)
+			return
+		}
 		if r.Method == "POST" {
 			var c Config
 			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
 				http.Error(w, err.Error(), 400)
 				return
 			}
+			old := GetConfig()
+			oldWxMode := old.EffectiveWxMode()
+
+			// 账号列表由各自接口维护（/api/accounts、/api/wx/bind、/api/wx/hook/account）。
+			// 设置页保存的是配置快照，不能让它把账号列表覆盖掉——
+			// 历史上 db_accounts 被清空就是这么发生的。
+			c.DbAccounts = old.DbAccounts
+			c.DbWxid, c.DbKey = old.DbWxid, old.DbKey
+			c.HookAccounts = old.HookAccounts
+
+			// 密钥：界面拿到的是打码值，空值/打码值一律视为“不修改”
+			if c.XPaySecret == "" || c.XPaySecret == secretMask {
+				c.XPaySecret = old.XPaySecret
+			}
+			if c.V1Secret == "" || c.V1Secret == secretMask {
+				c.V1Secret = old.V1Secret
+			}
+			if c.YjkToken == "" || c.YjkToken == secretMask {
+				c.YjkToken = old.YjkToken
+			}
+
+			// 采集模式切换必须先校验「当前模式的账号已删干净」，
+			// 而且校验必须在写配置之前——否则会出现"拒绝切换但配置已改"的混用状态。
+			newWxMode := c.EffectiveWxMode()
+			if newWxMode != oldWxMode {
+				if oldWxMode == "hook" && len(old.EffectiveHookAccounts()) > 0 {
+					http.Error(w, `{"ok":false,"err":"切换前请先删除 Hook 模式下的微信账号"}`, 409)
+					return
+				}
+				if oldWxMode == "key" && len(old.EffectiveDbAccounts()) > 0 {
+					http.Error(w, `{"ok":false,"err":"切换前请先删除通行密钥模式下的微信账号"}`, 409)
+					return
+				}
+			}
+
 			if err := SetConfig(c); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}
-			logInfo("config", "配置已更新: mode=%s forward_all=%v", c.Mode, c.ForwardAll)
+			logInfo("config", "配置已更新: mode=%s wx_mode=%s forward_all=%v",
+				c.Mode, c.EffectiveWxMode(), c.ForwardAll)
+			if newWxMode != oldWxMode {
+				switchWxMode(newWxMode)
+			}
 			// 心跳必须跟随模式：
 			//   X-Ypay 有心跳接口 → 切过来立刻拉起并先发一轮；
 			//   码支付V1 没有心跳接口 → 切过去必须彻底停发。
@@ -722,7 +810,7 @@ func startServer() (int, error) {
 			if s.PID != "" {
 				upsertAccount(Account{
 					Type: "alipay", Wxid: s.PID, Nick: s.Nick,
-					ChannelID: s.ChannelID, ChannelCode: "alipay_app", Enabled: true,
+					ChannelID: s.ChannelFor(GetConfig().Mode), ChannelCode: "alipay_app", Enabled: true,
 				})
 			}
 			logInfo("alipay", "登录完成：Cookie %d 条，PID=%s，%s",
@@ -765,7 +853,7 @@ func startServer() (int, error) {
 
 		// 同步到上报账号表，Report() 才能找到它
 		if s.PID != "" {
-			ch := s.ChannelID
+			ch := s.ChannelFor(GetConfig().Mode)
 			if a, had := findAccount(s.PID); had {
 				ch = a.ChannelID
 			}
@@ -798,16 +886,20 @@ func startServer() (int, error) {
 			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "会话不存在"})
 			return
 		}
-		s.ChannelID = strings.TrimSpace(req.ChannelID)
+		s.SetChannelFor(GetConfig().Mode, req.ChannelID)
 		upsertAlipaySession(s)
 		saveAlipaySessions()
+		if strings.TrimSpace(GetConfig().Mode) == "xpay" {
+			ensureXPayHeartbeat()
+			go xpayHeartbeatRound()
+		}
 		if s.PID != "" {
 			upsertAccount(Account{
 				Type: "alipay", Wxid: s.PID, Nick: s.Nick,
-				ChannelID: s.ChannelID, ChannelCode: "alipay_app", Enabled: true,
+				ChannelID: s.ChannelFor(GetConfig().Mode), ChannelCode: "alipay_app", Enabled: true,
 			})
 		}
-		logInfo("config", "支付宝账号 %s 绑定通道 %s", maskPid(s.PID), s.ChannelID)
+		logInfo("config", "支付宝账号 %s 绑定通道 %s（模式 %s）", maskPid(s.PID), s.ChannelID, GetConfig().Mode)
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 
@@ -872,8 +964,16 @@ func startServer() (int, error) {
 			}
 			// 通道编码不由用户选，按账号类型定
 			a.ChannelCode = inferChannelCode(a.Wxid)
+			// 通道号按平台分存：X-Ypay 与码支付V1 是两套编号
+			mode := GetConfig().Mode
+			a.SetChannelFor(mode, a.ChannelID)
 			upsertAccount(a)
-			logInfo("config", "账号通道已保存 wxid=%s 通道=%s 编码=%s", a.Wxid, a.ChannelID, a.ChannelCode)
+			logInfo("config", "账号通道已保存 wxid=%s 通道=%s（模式 %s）编码=%s",
+				a.Wxid, a.ChannelID, mode, a.ChannelCode)
+			if strings.TrimSpace(GetConfig().Mode) == "xpay" {
+				ensureXPayHeartbeat()
+				go xpayHeartbeatRound()
+			}
 			w.Write([]byte(`{"ok":true}`))
 			return
 		}
@@ -1149,6 +1249,275 @@ func startServer() (int, error) {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("/api/wx/mode", func(w http.ResponseWriter, r *http.Request) {
+		c := GetConfig()
+		keys := make([]string, 0, len(c.EffectiveDbAccounts()))
+		for _, a := range c.EffectiveDbAccounts() {
+			keys = append(keys, a.Wxid)
+		}
+		hooks := c.HookAccounts // 停止的账号也要返回，界面才能显示并重新启动
+		out := map[string]any{
+			"mode": c.EffectiveWxMode(), "key_accounts": keys,
+			"hook_accounts": hooks, "hook": hookStateSnapshot(), "dll": HookDLLInfo(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(out)
+	})
+
+	mux.HandleFunc("/api/wx/hook/account", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		var req HookAccount
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+			(req.Wxid == "" && req.PID == 0) {
+			http.Error(w, "bad request", 400)
+			return
+		}
+		// 界面只回传 wxid 时，从已有账号里补回 PID，别把 pid 写成 0
+		if req.PID == 0 {
+			for _, old := range GetConfig().EffectiveHookAccounts() {
+				if old.Wxid == req.Wxid && old.PID != 0 {
+					req.PID = old.PID
+					break
+				}
+			}
+		}
+		// 拿不到 wxid 时先按数据目录推断，最后才退回 pid
+		if req.Wxid == "" {
+			if wx := singleWxidFromDisk(); wx != "" {
+				req.Wxid = wx
+			} else {
+				req.Wxid = fmt.Sprintf("pid:%d", req.PID)
+			}
+		}
+		req.Enabled = true
+		c := GetConfig()
+		mode := c.Mode
+		found := false
+		for i := range c.HookAccounts {
+			if c.HookAccounts[i].Wxid == req.Wxid {
+				// 保留另一个接口模式的通道号，切平台不用重绑
+				req.ChannelIDXpay = c.HookAccounts[i].ChannelIDXpay
+				req.ChannelIDV1 = c.HookAccounts[i].ChannelIDV1
+				req.SetChannelFor(mode, req.ChannelID)
+				c.HookAccounts[i] = req
+				found = true
+				break
+			}
+		}
+		if !found {
+			req.SetChannelFor(mode, req.ChannelID)
+			c.HookAccounts = append(c.HookAccounts, req)
+		}
+		// 同一进程只保留一个账号：把旧的 pid:xxxx 别名清掉
+		dedup := make([]HookAccount, 0, len(c.HookAccounts))
+		for _, a := range c.HookAccounts {
+			if a.PID == req.PID && a.Wxid != req.Wxid {
+				continue
+			}
+			dedup = append(dedup, a)
+		}
+		c.HookAccounts = dedup
+		if err := SetConfig(c); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		c.HookNoAutoBind = false
+		if err := SetConfig(c); err != nil {
+			logWarn("hook", "保存配置失败：%v", err)
+		}
+		logInfo("hook", "账号已保存 %s（通道 %s）", req.Wxid, req.ChannelID)
+		if c.EffectiveWxMode() == "hook" {
+			stopHookSource()
+			startHookSource()
+		}
+		// 新增/修改账号后立刻发一轮心跳，不等 60 秒周期，
+		// 否则平台那边会有一分钟看不到这个通道在线。
+		if strings.TrimSpace(c.Mode) == "xpay" {
+			ensureXPayHeartbeat()
+			go xpayHeartbeatRound()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	})
+
+	mux.HandleFunc("/api/wx/hook/dll", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(HookDLLInfo())
+	})
+
+	mux.HandleFunc("/api/wx/hook/inject", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		dll := hookDLLPath()
+		if dll == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"ok":false,"err":"未找到 hook DLL"}`))
+			return
+		}
+		pids := MainPidsOf(WeChatProc)
+		if len(pids) == 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"ok":false,"err":"微信未运行"}`))
+			return
+		}
+		if err := injectDLL(pids[0], dll); err != nil {
+			logError("hook", "接入微信失败：%v", err)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			return
+		}
+		injectedPid = pids[0]
+		logInfo("hook", "已连接微信进程 %d", pids[0])
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "pid": pids[0]})
+	})
+
+	// 账号启停：状态独立保存；停止只停这个账号，删除才清账号（订单记录保留）
+	mux.HandleFunc("/api/accounts/state", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		var req struct {
+			Wxid    string `json:"wxid"`
+			Enabled bool   `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Wxid == "" {
+			http.Error(w, "bad request", 400)
+			return
+		}
+		a, ok := findAccount(req.Wxid)
+		if !ok {
+			http.Error(w, "not found", 404)
+			return
+		}
+		a.Enabled = req.Enabled
+		upsertAccount(a)
+		if GetConfig().EffectiveWxMode() == "key" {
+			if req.Enabled {
+				var da DbAccount
+				foundDa := false
+				for _, x := range GetConfig().EffectiveDbAccounts() {
+					if x.Wxid == req.Wxid {
+						da, foundDa = x, true
+						break
+					}
+				}
+				if foundDa {
+					if acc, ok2 := findWxAccount(da.Wxid); ok2 && acc.HasBiz {
+						if err := StartWxMonitor(acc.BizDB, da.Key, acc.Wxid, acc); err != nil {
+							logWarn("monitor", "账号 %s 启动失败：%v", req.Wxid, err)
+						}
+					}
+				}
+			} else {
+				StopWxMonitorFor(req.Wxid)
+			}
+		}
+		logInfo("config", "账号 %s 已%s", req.Wxid, map[bool]string{true: "启动", false: "停止"}[req.Enabled])
+		w.Write([]byte(`{"ok":true}`))
+	})
+
+	mux.HandleFunc("/api/wx/hook/state", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		var req struct {
+			Wxid    string `json:"wxid"`
+			Enabled bool   `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Wxid == "" {
+			http.Error(w, "bad request", 400)
+			return
+		}
+		c := GetConfig()
+		ok := false
+		wantPid := 0
+		if strings.HasPrefix(req.Wxid, "pid:") {
+			fmt.Sscanf(req.Wxid, "pid:%d", &wantPid)
+		}
+		for i := range c.HookAccounts {
+			if c.HookAccounts[i].Wxid == req.Wxid || (wantPid != 0 && c.HookAccounts[i].PID == wantPid) {
+				c.HookAccounts[i].Enabled = req.Enabled
+				ok = true
+			}
+		}
+		if !ok {
+			http.Error(w, "not found", 404)
+			return
+		}
+		if err := SetConfig(c); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		logInfo("config", "账号 %s 已%s", req.Wxid, map[bool]string{true: "启动", false: "停止"}[req.Enabled])
+		w.Write([]byte(`{"ok":true}`))
+	})
+
+	mux.HandleFunc("/api/wx/hook/remove", func(w http.ResponseWriter, r *http.Request) {
+		wxid := r.URL.Query().Get("wxid")
+		if wxid == "" {
+			http.Error(w, "wxid required", 400)
+			return
+		}
+		c := GetConfig()
+		kept := make([]HookAccount, 0, len(c.HookAccounts))
+		for _, a := range c.HookAccounts {
+			if a.Wxid != wxid {
+				kept = append(kept, a)
+			}
+		}
+		c.HookAccounts = kept
+		if err := SetConfig(c); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		logInfo("hook", "已移除账号 %s", wxid)
+		if len(c.EffectiveHookAccounts()) == 0 {
+			c.HookNoAutoBind = true
+			if err := SetConfig(c); err != nil {
+				logWarn("hook", "保存配置失败：%v", err)
+			}
+		}
+		if c.EffectiveWxMode() == "hook" {
+			stopHookSource()
+			startHookSource()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	})
+
+	mux.HandleFunc("/api/wx/processes", func(w http.ResponseWriter, r *http.Request) {
+		type item struct {
+			PID   uint32 `json:"pid"`
+			Wxid  string `json:"wxid"`
+			Bound bool   `json:"bound"`
+		}
+		bound := map[int]bool{}
+		for _, a := range GetConfig().HookAccounts {
+			bound[a.PID] = true
+		}
+		list := make([]item, 0, 4)
+		var pids []uint32
+		if main := MainWeChatPid(); main != 0 {
+			pids = []uint32{main}   // 只列主窗口进程，避免一堆渲染子进程
+		} else {
+			pids = MainPidsOf(WeChatProc)
+		}
+		for _, p := range pids {
+			// 账号 wxid 先留空：注入器接入后由 /api/get_login_info 回填
+			list = append(list, item{PID: p, Bound: bound[int(p)]})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"processes": list})
 	})
 
 	mux.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
@@ -1511,10 +1880,19 @@ func startServer() (int, error) {
 		w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": len(rows), "rows": rows})
 	})
 	mux.HandleFunc("/api/debug", func(w http.ResponseWriter, r *http.Request) {
+		// 消息调试按模式隔离：默认只看当前模式，?mode=all 才合并
+		want := r.URL.Query().Get("mode")
+		if want == "" {
+			want = GetConfig().EffectiveWxMode()
+		}
 		e := eng
 		e.mu.Lock()
-		out := make([]DebugItem, len(e.debug))
-		copy(out, e.debug)
+		out := make([]DebugItem, 0, len(e.debug))
+		for _, it := range e.debug {
+			if want == "all" || it.Mode == "" || it.Mode == want {
+				out = append(out, it)
+			}
+		}
 		e.mu.Unlock()
 		json.NewEncoder(w).Encode(out)
 	})
@@ -1544,7 +1922,33 @@ func startServer() (int, error) {
 	return port, nil
 }
 
+// forwardAndRecord 微信消息的统一上报入口（hook 路径使用）：
+// 去重 → 统计 → 上报 → 写收款记录，和数据库路径保持同一套语义。
+func (e *Engine) forwardAndRecord(m *ChatMsg) {
+	key := hashMsg(m.From+"|"+m.To+"|"+m.Content, m.Time)
+	e.mu.Lock()
+	if e.seen[key] {
+		e.mu.Unlock()
+		return
+	}
+	e.seen[key] = true
+	e.stats.Forwarded++
+	e.mu.Unlock()
 
+	res := Report(m)
+	ok := res.Delivered && res.OK
+	e.mu.Lock()
+	if res.Delivered && !res.OK {
+		e.stats.Failed++
+		if res.Err == "" {
+			res.Err = "HTTP " + itoa(int(res.Code))
+		}
+		logError("callback", "上报失败：%s", res.Err)
+	} else if ok {
+		e.stats.Reported++
+		logInfo("callback", "上报成功 [%d]", res.Code)
+	}
+	e.mu.Unlock()
 
-
-
+	e.addHistory(m, ok, res.Err, &res)
+}

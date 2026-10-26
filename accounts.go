@@ -17,7 +17,9 @@ type Account struct {
 	Type       string `json:"type"`
 	Wxid       string `json:"wxid"`        // 微信 wxid_xxx / 支付宝 PID 2088...
 	Nick       string `json:"nick"`        // 备注名，可手动填
-	ChannelID  string `json:"channel_id"`  // 通道 ID（码支付 V1 用；X-Ypay 时是 channel_account_id）
+	ChannelID  string `json:"channel_id"`  // 通用通道 ID（旧字段，作为两个平台的兜底）
+	ChannelIDXpay string `json:"channel_id_xpay"` // X-Ypay 的通道 ID
+	ChannelIDV1   string `json:"channel_id_v1"`   // 码支付V1 的通道 ID
 	ChannelCode string `json:"channel_code"` // X-Ypay 通道代码：jk_wechat_pc / jk_wechat_app / alipay_app / jk_alipay
 	Secret     string `json:"secret"`      // 商户密钥 / token（可选，空则用全局）
 	MerchantID string `json:"merchant_id"` // 商户号 / PID（可选）
@@ -113,10 +115,23 @@ func inferChannelCode(id string) string {
 
 func findAccount(wxid string) (Account, bool) {
 	accMu.Lock()
-	defer accMu.Unlock()
 	for _, a := range accList {
 		if a.Wxid == wxid {
+			accMu.Unlock()
 			return a, true
+		}
+	}
+	accMu.Unlock()
+	// HK 模式的账号不在账号表里，回落到 hook_accounts，否则上报会报"未绑定"
+	if GetConfig().EffectiveWxMode() == "hook" {
+		for _, h := range GetConfig().EffectiveHookAccounts() {
+			if h.Wxid == wxid {
+				return Account{
+					Type: "wechat", Wxid: h.Wxid,
+					ChannelID: h.ChannelID, ChannelIDXpay: h.ChannelIDXpay, ChannelIDV1: h.ChannelIDV1,
+					ChannelCode: "jk_wechat_pc", Enabled: h.Enabled,
+				}, true
+			}
 		}
 	}
 	return Account{}, false
@@ -127,6 +142,34 @@ func upsertAccount(a Account) {
 	accMu.Lock()
 	for i := range accList {
 		if accList[i].Wxid == a.Wxid {
+			old := accList[i]
+			// 合并而不是整条替换：界面每次只送当前平台的字段，
+			// 直接覆盖会把另一个平台的通道号、备注、密钥清空。
+			if a.ChannelIDXpay == "" {
+				a.ChannelIDXpay = old.ChannelIDXpay
+			}
+			if a.ChannelIDV1 == "" {
+				a.ChannelIDV1 = old.ChannelIDV1
+			}
+			if a.Nick == "" {
+				a.Nick = old.Nick
+			}
+			if a.Secret == "" {
+				a.Secret = old.Secret
+			}
+			if a.MerchantID == "" {
+				a.MerchantID = old.MerchantID
+			}
+			if a.Note == "" {
+				a.Note = old.Note
+			}
+			if a.ChannelCode == "" {
+				a.ChannelCode = old.ChannelCode
+			}
+			if a.Type == "" {
+				a.Type = old.Type
+			}
+			a.Enabled = a.Enabled || old.Enabled
 			accList[i] = a
 			accMu.Unlock()
 			saveAccounts()
@@ -204,4 +247,30 @@ func ensureAccount(wxid string) {
 	saveAccounts()
 }
 
+// ChannelFor 按当前接口模式取通道 ID：优先该平台专有值，未设置时回落到通用字段。
+// X-Ypay 与码支付V1 的通道号是两套，切换平台不该要求重新绑定。
+func (a Account) ChannelFor(mode string) string {
+	switch mode {
+	case "v1":
+		if x := strings.TrimSpace(a.ChannelIDV1); x != "" {
+			return x
+		}
+	case "xpay":
+		if x := strings.TrimSpace(a.ChannelIDXpay); x != "" {
+			return x
+		}
+	}
+	return strings.TrimSpace(a.ChannelID)
+}
 
+// SetChannelFor 按平台写入通道 ID，同时同步旧字段，兼容旧版本读取
+func (a *Account) SetChannelFor(mode, id string) {
+	id = strings.TrimSpace(id)
+	a.ChannelID = id
+	switch mode {
+	case "v1":
+		a.ChannelIDV1 = id
+	case "xpay":
+		a.ChannelIDXpay = id
+	}
+}
