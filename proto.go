@@ -32,6 +32,36 @@ func readVarint(d []byte, i int) (uint64, int, bool) {
 	return 0, i, false
 }
 
+func extractMessageServerID(fields []PBField) uint64 {
+	var shortPath, longPath uint64
+	for _, f := range fields {
+		if f.Wire != 0 || f.Var == 0 {
+			continue
+		}
+		switch f.Path {
+		case "2.2.2.2.1":
+			if shortPath == 0 {
+				shortPath = f.Var
+			}
+		case "2.2.2.2.2.1":
+			if longPath == 0 {
+				longPath = f.Var
+			}
+		}
+	}
+	if longPath != 0 {
+		return longPath
+	}
+	return shortPath
+}
+
+func stableWeChatMsgID(id uint64) string {
+	if id == 0 {
+		return ""
+	}
+	return "wechat-server:" + strconv.FormatUint(id, 10)
+}
+
 // ParsePB 递归解析，path 用点号表示层级
 func ParsePB(d []byte, depth int, prefix string, out *[]PBField) {
 	i := 0
@@ -90,21 +120,22 @@ func ParsePB(d []byte, depth int, prefix string, out *[]PBField) {
 }
 
 type ChatMsg struct {
-	From    string
-	To      string
-	Content string
-	Display string
-	Time    uint64
-	MsgID   uint64
-	Amount  float64 // 从正文提取的金额（元），0 表示识别不到
-	Raw     []byte
-	RawText string // 原始消息文本（XML 消息保留完整报文，便于排查）
+	From     string
+	To       string
+	Content  string
+	Display  string
+	Time     uint64
+	MsgID    uint64
+	StableID string  // 源提供且语义明确的消息 ID；protobuf 猜测值不填入这里
+	Amount   float64 // 从正文提取的金额（元），0 表示识别不到
+	Raw      []byte
+	RawText  string // 原始消息文本（XML 消息保留完整报文，便于排查）
 
 	// 公众号消息专用字段（wxtool 合同）
-	SortSeq  int64
-	LocalID  int64
-	GHFrom   string // 公众号 gh_id（= From）
-	GHName   string // 公众号显示名（微信收款商业版 等）
+	SortSeq int64
+	LocalID int64
+	GHFrom  string // 公众号 gh_id（= From）
+	GHName  string // 公众号显示名（微信收款商业版 等）
 }
 
 // ExtractMsg 从 protobuf 里提取聊天消息，不是消息就返回 nil
@@ -146,16 +177,17 @@ func ExtractMsg(d []byte) *ChatMsg {
 			}
 		}
 	}
+	// In the long layout, the shallower field 1 is a container counter;
+	// the nested field is the stable server message ID.
+	m.MsgID = extractMessageServerID(fields)
+	m.StableID = stableWeChatMsgID(m.MsgID)
+
 	// 数字字段
 	for _, f := range fields {
 		if f.Wire != 0 {
 			continue
 		}
 		switch f.Path {
-		case "2.2.2.2.1", "2.2.2.2.2.1":
-			if m.MsgID == 0 {
-				m.MsgID = f.Var
-			}
 		case "2.2.2.2.9", "2.2.2.2.2.9":
 			if m.Time == 0 {
 				m.Time = f.Var
@@ -265,10 +297,3 @@ func isPrintable(s string) bool {
 }
 
 var _ = binary.LittleEndian
-
-
-
-
-
-
-

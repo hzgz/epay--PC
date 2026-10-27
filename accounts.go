@@ -3,10 +3,12 @@ package main
 // 账号通道绑定：每个微信账号（wxid）可以单独配置通道值
 
 import (
-	"strings"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -14,23 +16,25 @@ type Account struct {
 	// Type 账号类型：wechat / alipay。留空时按 Wxid 前缀推断。
 	//   wxid_*  → wechat
 	//   2088*   → alipay
-	Type       string `json:"type"`
-	Wxid       string `json:"wxid"`        // 微信 wxid_xxx / 支付宝 PID 2088...
-	Nick       string `json:"nick"`        // 备注名，可手动填
-	ChannelID  string `json:"channel_id"`  // 通用通道 ID（旧字段，作为两个平台的兜底）
+	Type          string `json:"type"`
+	Wxid          string `json:"wxid"`            // 微信 wxid_xxx / 支付宝 PID 2088...
+	Nick          string `json:"nick"`            // 备注名，可手动填
+	ChannelID     string `json:"channel_id"`      // 通用通道 ID（旧字段，作为两个平台的兜底）
 	ChannelIDXpay string `json:"channel_id_xpay"` // X-Ypay 的通道 ID
 	ChannelIDV1   string `json:"channel_id_v1"`   // 码支付V1 的通道 ID
-	ChannelCode string `json:"channel_code"` // X-Ypay 通道代码：jk_wechat_pc / jk_wechat_app / alipay_app / jk_alipay
-	Secret     string `json:"secret"`      // 商户密钥 / token（可选，空则用全局）
-	MerchantID string `json:"merchant_id"` // 商户号 / PID（可选）
-	Enabled    bool   `json:"enabled"`     // 是否启用该账号的上报
-	Note       string `json:"note"`
+	ChannelCode   string `json:"channel_code"`    // X-Ypay 通道代码：jk_wechat_pc / jk_wechat_app / alipay_app / jk_alipay
+	Secret        string `json:"secret"`          // 商户密钥 / token（可选，空则用全局）
+	MerchantID    string `json:"merchant_id"`     // 商户号 / PID（可选）
+	Enabled       bool   `json:"enabled"`         // 是否启用该账号的上报
+	Note          string `json:"note"`
 }
 
 var (
-	accMu   sync.Mutex
-	accList []Account
-	accPath string
+	accMu      sync.Mutex
+	accList    []Account
+	accPath    string
+	accLoadErr error
+	accLoaded  bool
 )
 
 func accountsFile() string {
@@ -46,28 +50,83 @@ func accountsFile() string {
 	return accPath
 }
 
-func loadAccounts() {
+func loadAccounts() error {
 	accMu.Lock()
 	defer accMu.Unlock()
 	b, err := os.ReadFile(accountsFile())
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		accList = []Account{}
-		return
+		accLoadErr = nil
+		accLoaded = true
+		return nil
+	}
+	if err != nil {
+		accLoadErr = err
+		accLoaded = true
+		return fmt.Errorf("读取账号配置失败: %w", err)
 	}
 	var v []Account
-	if json.Unmarshal(b, &v) == nil {
-		accList = v
+	if err := json.Unmarshal(b, &v); err != nil {
+		accLoadErr = err
+		accLoaded = true
+		return fmt.Errorf("解析账号配置失败: %w", err)
 	}
+	accList = v
+	accLoadErr = nil
+	accLoaded = true
+	return nil
 }
 
 func saveAccounts() error {
 	accMu.Lock()
 	defer accMu.Unlock()
+	if err := accountsWriteErrorLocked(); err != nil {
+		return err
+	}
 	b, err := json.MarshalIndent(accList, "", "  ")
 	if err != nil {
 		return err
 	}
 	return atomicWriteFile(accountsFile(), b, 0644)
+}
+
+func accountsWriteErrorLocked() error {
+	if !accLoaded {
+		return errors.New("账号配置尚未加载，拒绝写入")
+	}
+	if accLoadErr != nil {
+		return fmt.Errorf("账号配置加载失败，拒绝覆盖原文件: %w", accLoadErr)
+	}
+	return nil
+}
+
+func accountsError() error {
+	accMu.Lock()
+	defer accMu.Unlock()
+	return accountsWriteErrorLocked()
+}
+
+// updateAccounts commits the in-memory change only after the atomic file write succeeds.
+func updateAccounts(change func([]Account) ([]Account, bool, error)) (bool, error) {
+	accMu.Lock()
+	defer accMu.Unlock()
+	if err := accountsWriteErrorLocked(); err != nil {
+		return false, err
+	}
+	list := append([]Account(nil), accList...)
+	updated, matched, err := change(list)
+	if err != nil || !matched {
+		return matched, err
+	}
+	b, err := json.MarshalIndent(updated, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	if err := atomicWriteFile(accountsFile(), b, 0644); err != nil {
+		return false, err
+	}
+	accList = updated
+	return true, nil
 }
 
 func accountsCopy() []Account {
@@ -80,8 +139,10 @@ func accountsCopy() []Account {
 
 // findAccount 按 wxid 查账号配置
 // inferChannelCode 按账号类型决定通道编码，不需要用户选。
-//   微信（wxid_ 开头）  → jk_wechat_pc
-//   其它（2088... 支付宝） → alipay_app
+//
+//	微信（wxid_ 开头）  → jk_wechat_pc
+//	其它（2088... 支付宝） → alipay_app
+//
 // accountType 判断账号类型。
 // 显式写了 Type 就用它，否则按 ID 前缀推断。
 func accountType(id string) string {
@@ -104,8 +165,9 @@ func accountKind(a Account) string {
 }
 
 // inferChannelCode 通道编码由账号类型决定，不让用户选。
-//   微信   → jk_wechat_pc
-//   支付宝 → alipay_app
+//
+//	微信   → jk_wechat_pc
+//	支付宝 → alipay_app
 func inferChannelCode(id string) string {
 	if accountType(id) == "alipay" {
 		return "alipay_app"
@@ -192,84 +254,82 @@ func checkChannelConflicts() {
 
 // setAccountEnabled 显式设置启用状态。
 // 不走 upsertAccount 的合并规则（那里为了保留通道字段用了 OR，会把"停用"盖回去）。
-func setAccountEnabled(wxid string, enabled bool) bool {
-	accMu.Lock()
-	found := false
-	for i := range accList {
-		if accList[i].Wxid == wxid {
-			accList[i].Enabled = enabled
-			found = true
-			break
+func setAccountEnabled(wxid string, enabled bool) (bool, error) {
+	return updateAccounts(func(list []Account) ([]Account, bool, error) {
+		for i := range list {
+			if list[i].Wxid == wxid {
+				list[i].Enabled = enabled
+				return list, true, nil
+			}
 		}
-	}
-	accMu.Unlock()
-	if found {
-		saveAccounts()
-	}
-	return found
+		return list, false, nil
+	})
 }
 
 // upsertAccount 新增或更新一个账号
-func upsertAccount(a Account) {
-	accMu.Lock()
-	for i := range accList {
-		if accList[i].Wxid == a.Wxid {
-			old := accList[i]
-			// 合并而不是整条替换：界面每次只送当前平台的字段，
-			// 直接覆盖会把另一个平台的通道号、备注、密钥清空。
-			if a.ChannelIDXpay == "" {
-				a.ChannelIDXpay = old.ChannelIDXpay
+func upsertAccount(a Account) error {
+	_, err := updateAccounts(func(list []Account) ([]Account, bool, error) {
+		for i := range list {
+			if list[i].Wxid == a.Wxid {
+				old := list[i]
+				// 合并而不是整条替换：界面每次只送当前平台的字段，
+				// 直接覆盖会把另一个平台的通道号、备注、密钥清空。
+				if a.ChannelIDXpay == "" {
+					a.ChannelIDXpay = old.ChannelIDXpay
+				}
+				if a.ChannelIDV1 == "" {
+					a.ChannelIDV1 = old.ChannelIDV1
+				}
+				if a.Nick == "" {
+					a.Nick = old.Nick
+				}
+				if a.Secret == "" {
+					a.Secret = old.Secret
+				}
+				if a.MerchantID == "" {
+					a.MerchantID = old.MerchantID
+				}
+				if a.Note == "" {
+					a.Note = old.Note
+				}
+				if a.ChannelCode == "" {
+					a.ChannelCode = old.ChannelCode
+				}
+				if a.Type == "" {
+					a.Type = old.Type
+				}
+				a.Enabled = a.Enabled || old.Enabled
+				list[i] = a
+				return list, true, nil
 			}
-			if a.ChannelIDV1 == "" {
-				a.ChannelIDV1 = old.ChannelIDV1
-			}
-			if a.Nick == "" {
-				a.Nick = old.Nick
-			}
-			if a.Secret == "" {
-				a.Secret = old.Secret
-			}
-			if a.MerchantID == "" {
-				a.MerchantID = old.MerchantID
-			}
-			if a.Note == "" {
-				a.Note = old.Note
-			}
-			if a.ChannelCode == "" {
-				a.ChannelCode = old.ChannelCode
-			}
-			if a.Type == "" {
-				a.Type = old.Type
-			}
-			a.Enabled = a.Enabled || old.Enabled
-			accList[i] = a
-			accMu.Unlock()
-			saveAccounts()
-			return
 		}
-	}
-	accList = append(accList, a)
-	accMu.Unlock()
-	saveAccounts()
+		return append(list, a), true, nil
+	})
+	return err
 }
 
-func removeAccount(wxid string) {
-	accMu.Lock()
-	out := make([]Account, 0, len(accList))
-	for _, a := range accList {
-		if a.Wxid != wxid {
+func removeAccount(wxid string) error {
+	_, err := updateAccounts(func(list []Account) ([]Account, bool, error) {
+		out := make([]Account, 0, len(list))
+		found := false
+		for _, a := range list {
+			if a.Wxid == wxid {
+				found = true
+				continue
+			}
 			out = append(out, a)
 		}
-	}
-	accList = out
-	accMu.Unlock()
-	saveAccounts()
+		return out, found, nil
+	})
+	return err
 }
 
 // deleteAccountAll 删除一个账号的全部配置：账号记录、通道绑定、数据库监控、密钥。
 // 订单记录（records.json）和支付信息一律保留，方便对账。
-func deleteAccountAll(wxid string) {
-	removeAccount(wxid)
+func deleteAccountAll(wxid string) error {
+	if err := removeAccount(wxid); err != nil {
+		return err
+	}
 
 	// 停掉该账号的数据库监控和实时消息监控（不影响其他账号）
 	StopWxMonitorFor(wxid)
@@ -315,23 +375,23 @@ func deleteAccountAll(wxid string) {
 	}
 
 	logInfo("config", "账号已删除 %s（订单记录与支付信息保留）", wxid)
+	return nil
 }
 
 // ensureAccount 从消息里发现新账号时自动建档
-func ensureAccount(wxid string) {
+func ensureAccount(wxid string) error {
 	if wxid == "" {
-		return
+		return nil
 	}
-	accMu.Lock()
-	for _, a := range accList {
-		if a.Wxid == wxid {
-			accMu.Unlock()
-			return
+	_, err := updateAccounts(func(list []Account) ([]Account, bool, error) {
+		for _, a := range list {
+			if a.Wxid == wxid {
+				return list, false, nil
+			}
 		}
-	}
-	accList = append(accList, Account{Wxid: wxid, Enabled: true})
-	accMu.Unlock()
-	saveAccounts()
+		return append(list, Account{Wxid: wxid, Enabled: true}), true, nil
+	})
+	return err
 }
 
 // ChannelFor 按当前接口模式取通道 ID：优先该平台专有值，未设置时回落到通用字段。

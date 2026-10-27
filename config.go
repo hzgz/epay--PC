@@ -57,6 +57,8 @@ type Config struct {
 	HookListen string `json:"hook_listen"`
 	// 用户主动删光 HK 账号后不再自动绑定（否则永远删不干净，切不回密钥模式）
 	HookNoAutoBind bool `json:"hook_no_autobind"`
+	// 本机 IPC 路径令牌：接收端只认这个随机路径，避免固定 URL 被本机程序发现
+	HookIPCToken string `json:"hook_ipc_token"`
 	// 用户手动删除过的账号（wxid），进程还在时也不自动加回来
 	HookBlocked []string `json:"hook_blocked"`
 	HookKey    string `json:"hook_key"`

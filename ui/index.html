@@ -2630,7 +2630,10 @@ async function refreshAccounts(){
       return;
     }
 
-    const arr = await (await fetch('/api/accounts')).json() || [];
+    const accountRes = await fetch('/api/accounts');
+    const accountBody = await accountRes.json().catch(()=>({}));
+    if(!accountRes.ok) throw new Error(accountBody.err || '账号配置不可用');
+    const arr = accountBody || [];
     accountsCache = arr;
     $('#accCount').textContent = arr.length + ' 个';
     const box = $('#accList2');
@@ -2667,13 +2670,18 @@ async function refreshAccounts(){
     }).join('');
     box.querySelectorAll('[data-state]').forEach(b=>b.onclick=async ()=>{
       const on = b.dataset.on !== '1';
-      await fetch('/api/accounts/state',{method:'POST',headers:{'Content-Type':'application/json'},
+      const r = await fetch('/api/accounts/state',{method:'POST',headers:{'Content-Type':'application/json'},
         body: JSON.stringify({wxid: b.dataset.state, enabled: on})});
+      if(!r.ok){ const e=await r.json().catch(()=>({})); toast('保存失败：'+(e.err||'账号状态未更改')); return; }
       toast(on?'已启动':'已停止'); refreshAccounts(); refresh();
     });
     box.querySelectorAll('[data-bind]').forEach(b=>b.onclick=()=>openBind(b.dataset.bind));
     box.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delAccount(b.dataset.del));
-  }catch(e){}
+  }catch(e){
+    const box = $('#accList2');
+    if(box) box.innerHTML = `<div class="empty" style="color:var(--red)">账号列表不可用：${esc(String(e.message||e))}</div>`;
+    const count = $('#accCount'); if(count) count.textContent = '错误';
+  }
 }
 
 async function delAccount(wxid){
@@ -2681,7 +2689,8 @@ async function delAccount(wxid){
   const name = a.nick || wxid;
   if(!await appConfirm(`确定删除账号「${name}」？\n\n删除后不再监控该账号的收款通知。`, '删除')) return;
   try{
-    await fetch('/api/accounts/delete?wxid='+encodeURIComponent(wxid), {method:'POST'});
+    const r = await fetch('/api/accounts/delete?wxid='+encodeURIComponent(wxid), {method:'POST'});
+    if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.err||'删除失败'); }
     await refreshAccounts();
   }catch(e){ toast('删除失败: '+e); }
 }
@@ -2726,7 +2735,7 @@ $('#bdSave').onclick = async ()=>{
   };
   const r = await fetch('/api/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(r.ok){ $('#bdMask').style.display='none'; toast('通道已绑定'); refreshAccounts(); }
-  else toast('保存失败');
+  else { const e=await r.json().catch(()=>({})); toast('保存失败：'+(e.err||'账号配置不可用')); }
 };
 
 $('#bdChannel').addEventListener('keydown', e=>{ if(e.key==='Enter') $('#bdSave').click(); });

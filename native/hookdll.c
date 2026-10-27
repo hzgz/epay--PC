@@ -75,6 +75,7 @@ static const char *find_sub(const char *p, size_t n, const char *needle) {
 // ---------- 配置 / 编码 / 加密 / 上报 ----------
 
 static char g_addr[128] = "127.0.0.1:19100";
+static char g_path[96];
 static char g_keyhex[128] = "";
 static int  g_ready = 0;
 
@@ -178,7 +179,7 @@ static void http_post(const char *body, int bodyLen) {
     HINTERNET c = WinHttpConnect(s, host, (INTERNET_PORT)port, 0);
     if (!c) { WinHttpCloseHandle(s); return; }
     wchar_t path[128];
-    swprintf(path, 128, L"%ls?pid=%lu", xw(X_EV), GetCurrentProcessId());
+    swprintf(path, 128, L"%hs?pid=%lu", g_path, GetCurrentProcessId());
     HINTERNET r = WinHttpOpenRequest(c, L"POST", path, NULL, WINHTTP_NO_REFERER,
                                      WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
     if (r) {
@@ -378,10 +379,21 @@ static void *build_trampoline(void *target) {
     return mem;
 }
 
+static void init_path(void) {
+	if (g_path[0]) return;
+	const char *d = xs(X_EV);
+	strncpy(g_path, d, sizeof(g_path) - 1);
+}
+
 static BOOL install(void) {
+	init_path();
     BYTE *target = NULL;
     // 自测模式：hook 一个固定地址的假目标，用来验证 trampoline 逻辑
-    const char *testAddr = getenv("EASYMON_TEST_TARGET");
+	#ifdef EASYMON_TESTING
+	const char *testAddr = getenv("EASYMON_TEST_TARGET");
+	#else
+	const char *testAddr = NULL;
+	#endif
     if (testAddr && *testAddr) {
         target = (BYTE *)(uintptr_t)strtoull(testAddr, NULL, 16);
         logf_("T0 %p", target);

@@ -11,7 +11,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,9 +26,9 @@ const (
 )
 
 var (
-	recMu     sync.Mutex
-	recDirty  bool
-	recRoot   string
+	recMu       sync.Mutex
+	recDirty    bool
+	recRoot     string
 	recLoaded   = map[string]bool{} // 成功读进来的桶文件，用于安全清理
 	recLoadedMu sync.Mutex
 )
@@ -237,9 +236,12 @@ func flushRecordsNow() {
 	recMu.Unlock()
 }
 
-// msgID 记录的唯一标识（时间 + 收发方 + 内容）
+// msgID 记录的唯一标识；有稳定源 ID 时优先使用它。
 func msgID(v *MsgView) string {
-	return fmt.Sprintf("%x", hashMsg(v.From+"|"+v.To+"|"+v.Content, v.Time))
+	return messageDedupKey(&ChatMsg{
+		From: v.From, To: v.To, Content: v.Content, Time: v.Time,
+		StableID: v.StableID, LocalID: v.LocalID,
+	})
 }
 
 // deleteRecords 删除指定 id 的记录，返回删除条数
@@ -250,9 +252,7 @@ func (e *Engine) deleteRecords(ids map[string]bool) int {
 	removed := 0
 	for i := range e.history {
 		v := e.history[i]
-		if v.ID == "" {
-			v.ID = msgID(&v)
-		}
+		v.ID = msgID(&v)
 		if ids[v.ID] {
 			removed++
 			continue

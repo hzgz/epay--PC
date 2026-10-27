@@ -17,21 +17,21 @@ package main
 // 纯 HTTP 复现会被拦。必须用内嵌浏览器（WebView2）让用户扫码，再从浏览器取 Cookie。
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
-	"strconv"
-	"html"
-	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -52,11 +52,11 @@ type AlipayCookie struct {
 
 // AlipaySession 一个支付宝登录会话
 type AlipaySession struct {
-	ID        string `json:"id"`
-	PID       string `json:"pid"`       // 支付宝 PID，2088 开头
-	MaskedID  string `json:"masked_id"` // 208****583
-	Status    string `json:"status"`    // waiting / confirmed / expired / offline
-	Nick      string `json:"nick"`
+	ID       string `json:"id"`
+	PID      string `json:"pid"`       // 支付宝 PID，2088 开头
+	MaskedID string `json:"masked_id"` // 208****583
+	Status   string `json:"status"`    // waiting / confirmed / expired / offline
+	Nick     string `json:"nick"`
 
 	ChannelID     string `json:"channel_id"`      // 通用通道 ID（旧字段，兜底）
 	ChannelIDXpay string `json:"channel_id_xpay"` // X-Ypay 通道
@@ -234,11 +234,11 @@ var (
 	aliSaveMu     sync.Mutex
 	aliLastSaveAt time.Time
 
-	aliMu    sync.Mutex
-	aliList  []AlipaySession
-	aliPath  string
-	aliStop  = make(chan struct{})
-	aliRun   bool
+	aliMu   sync.Mutex
+	aliList []AlipaySession
+	aliPath string
+	aliStop = make(chan struct{})
+	aliRun  bool
 )
 
 func aliEncCacheGet(plain string) (string, bool) {
@@ -433,8 +433,9 @@ const (
 )
 
 // 手机端收款记录（参考程序实际用的接口，实测可用）。
-//   chat.htm  : 下发 bizToken + SESSIONID(=接口参数 sid)，并带出登录的 USERID
-//   bizData   : templateId=100 的收款记录列表，pageNo=1 是最新一页
+//
+//	chat.htm  : 下发 bizToken + SESSIONID(=接口参数 sid)，并带出登录的 USERID
+//	bizData   : templateId=100 的收款记录列表，pageNo=1 是最新一页
 const (
 	alipayChatURL    = "https://csmobile.alipay.com/mypa/chat.htm?scene=app_mypa_robot"
 	alipayBizDataURL = "https://csmobile.alipay.com/guide/getBizData.json"
@@ -450,8 +451,8 @@ var alipayBillURLs = []string{
 
 // alipayLooksLikeLoginPage 判断响应体是不是支付宝登录页。
 // 支付宝登录页有两个坑：
-//   1. 可能直接返回 200（不是 302），所以不能只看状态码
-//   2. 页面是 GBK 编码，中文字节对不上 UTF-8 的"登录"，只能靠 ASCII 特征
+//  1. 可能直接返回 200（不是 302），所以不能只看状态码
+//  2. 页面是 GBK 编码，中文字节对不上 UTF-8 的"登录"，只能靠 ASCII 特征
 func alipayLooksLikeLoginPage(body []byte) bool {
 	// 安全校验页也有 <input type="password" style="display:none">，
 	// 但它不是登录页，不能当成"登录失效"（否则用户永远看不到验证提示）
@@ -497,7 +498,8 @@ func alipayLooksLikeLoginPage(body []byte) bool {
 // 这类页面必须当成"本次拉取失败"，不能当成"没有新订单"——
 // 否则一次限流就会被误判成零收款，直接漏单。
 // 已实测到的：
-//   <title>服务器繁忙</title>  +  wait-xxxx.css
+//
+//	<title>服务器繁忙</title>  +  wait-xxxx.css
 func alipayLooksLikeErrorPage(body []byte) bool {
 	if len(body) == 0 {
 		return true // 空响应也算失败
@@ -728,9 +730,9 @@ var (
 	aliBizRawMu   sync.Mutex
 	aliBizRawLast []byte
 	aliRawSig     uint64
-	reAliUserID = regexp.MustCompile(`USERID\s*=\s*'([^']*)'`)
-	reAliBizTok = regexp.MustCompile(`bizToken:\s*'([A-Za-z0-9_-]{8,64})'`)
-	reAliSessID = regexp.MustCompile(`SESSIONID\s*=\s*'([A-Za-z0-9_-]{8,64})'`)
+	reAliUserID   = regexp.MustCompile(`USERID\s*=\s*'([^']*)'`)
+	reAliBizTok   = regexp.MustCompile(`bizToken:\s*'([A-Za-z0-9_-]{8,64})'`)
+	reAliSessID   = regexp.MustCompile(`SESSIONID\s*=\s*'([A-Za-z0-9_-]{8,64})'`)
 )
 
 // alipayChatTokens 打开收款助手页，取回 USERID / bizToken / SESSIONID
@@ -807,10 +809,15 @@ func finishBrowserLogin(sessionID string, cookies []AlipayCookie, ua string) boo
 		logWarn("alipay", "保存登录态失败：%v", err)
 	}
 	if s.PID != "" {
-		upsertAccount(Account{
+		if err := upsertAccount(Account{
 			Type: "alipay", Wxid: s.PID, Nick: s.Nick,
 			ChannelID: s.ChannelFor(GetConfig().Mode), ChannelCode: "alipay_app", Enabled: true,
-		})
+		}); err != nil {
+			s.HeartbeatMsg = "账号配置保存失败：" + err.Error()
+			upsertAlipaySession(s)
+			_ = saveAlipaySessions()
+			logWarn("config", "保存支付宝账号 %s 失败：%v", maskPid(s.PID), err)
+		}
 	}
 	logInfo("alipay", "登录完成：Cookie %d 条，PID=%s，%s", len(cookies), maskPid(s.PID), s.HeartbeatMsg)
 	return verified
@@ -1360,7 +1367,6 @@ func alipayChannelCode(pid string) string {
 	return inferChannelCode(pid)
 }
 
-
 // alipayReportBill 把一笔支付宝收款上报到 X-Ypay。
 // 返回上报结果和用来落收款记录的 ChatMsg（调用方负责写记录）。
 func alipayReportBill(s AlipaySession, b AlipayBill) (ReportResult, *ChatMsg) {
@@ -1369,6 +1375,9 @@ func alipayReportBill(s AlipaySession, b AlipayBill) (ReportResult, *ChatMsg) {
 		To:     s.PID,
 		Amount: b.Amount,
 		MsgID:  hashToUint64(b.TradeNo),
+	}
+	if b.TradeNo != "" {
+		m.StableID = fmt.Sprintf("alipay:%016x", m.MsgID)
 	}
 	if t, ok := parseAlipayBillTime(b.Time); ok {
 		m.Time = uint64(t.Unix())
@@ -1406,23 +1415,23 @@ func alipayView(s AlipaySession) map[string]any {
 	}
 
 	return map[string]any{
-		"id":              s.ID,
-		"pid":             s.PID,
-		"masked_id":       s.MaskedID,
-		"nick":            s.Nick,
-		"status":          s.Status,
-		"channel_id":      s.ChannelFor(GetConfig().Mode),
-		"created_at":      s.CreatedAt,
-		"online_since":    s.OnlineSince,
-		"last_check":      s.LastCheck,
-		"last_heartbeat":  s.LastHeartbeat,
+		"id":                s.ID,
+		"pid":               s.PID,
+		"masked_id":         s.MaskedID,
+		"nick":              s.Nick,
+		"status":            s.Status,
+		"channel_id":        s.ChannelFor(GetConfig().Mode),
+		"created_at":        s.CreatedAt,
+		"online_since":      s.OnlineSince,
+		"last_check":        s.LastCheck,
+		"last_heartbeat":    s.LastHeartbeat,
 		"heartbeat_message": s.HeartbeatMsg,
-		"has_cookies":     len(s.Cookies) > 0,
-		"cookie_count":    len(s.Cookies),
-		"reported_count":  len(s.Reported),
-		"bill_watermark":  s.BillWatermark,
-		"security_pending": secPending, "security_qr": secQR,
-		"qr_status":       getQRState(s.ID).Status,
+		"has_cookies":       len(s.Cookies) > 0,
+		"cookie_count":      len(s.Cookies),
+		"reported_count":    len(s.Reported),
+		"bill_watermark":    s.BillWatermark,
+		"security_pending":  secPending, "security_qr": secQR,
+		"qr_status": getQRState(s.ID).Status,
 	}
 }
 

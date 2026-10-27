@@ -20,12 +20,12 @@ import (
 )
 
 type ReportResult struct {
-	OK     bool
-	Code   int
-	Body   string
-	Err    string
-	Sent   string
-	URL    string
+	OK   bool
+	Code int
+	Body string
+	Err  string
+	Sent string
+	URL  string
 
 	// Delivered 表示是否真的向平台发出了 HTTP 请求。
 	// 仅记录模式下为 false，用于区分「未上报」和「已回调」。
@@ -42,8 +42,8 @@ var pcAccounts = map[string]string{
 
 // 手机模式下平台接受的 title（写死在 WechatReceiptPayment::receipt）
 var mobileTitles = map[string]bool{
-	"微信支付":     true,
-	"微信收款助手":   true,
+	"微信支付":    true,
+	"微信收款助手":  true,
 	"微信收款商业版": true,
 }
 
@@ -108,6 +108,7 @@ func buildReportPC(m *ChatMsg, channelID string) (from, content string, ok bool)
 		return "", "", false
 	}
 	acc := m.GHFrom
+	messageID := reportMessageID(m)
 	obj := map[string]any{
 		"event":   "wxtool.officialAccount.message",
 		"account": map[string]any{"username": acc},
@@ -124,15 +125,25 @@ func buildReportPC(m *ChatMsg, channelID string) (from, content string, ok bool)
 			"content":        m.RawText,
 		},
 		"delivery": map[string]any{
-			"id":         fmt.Sprintf("delivery_%d_%d", m.LocalID, m.Time),
+			"id": fmt.Sprintf("delivery_%d_%d", messageID, m.Time),
 			// MPAY 校验：第一段必须是用 ctype_digit 通过的数字（账号数字ID）。
 			// 微信内部数字账号拿不到，就用 wxid 的稳定哈希代替——
 			// 同一账号恒定、参与去重，符合"工具实际游标"的要求。
-			"messageKey": fmt.Sprintf("%s:%s:%d:%d:%d", accountNumericID(firstNonEmpty(m.To, channelID)), acc, m.SortSeq, m.Time, m.LocalID),
+			"messageKey": fmt.Sprintf("%s:%s:%d:%d:%d", accountNumericID(firstNonEmpty(m.To, channelID)), acc, m.SortSeq, m.Time, messageID),
 		},
 	}
 	b, _ := json.Marshal(obj)
 	return acc, string(b), true
+}
+
+func reportMessageID(m *ChatMsg) uint64 {
+	if m.LocalID > 0 {
+		return uint64(m.LocalID)
+	}
+	if m.StableID != "" {
+		return hashToUint64(m.StableID)
+	}
+	return hashMsg(m.From+"|"+m.To+"|"+m.Content, m.Time)
 }
 
 // accountNumericID 给 MPAY 的 messageKey 用的账号数字 ID。

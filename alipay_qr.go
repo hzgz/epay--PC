@@ -34,11 +34,11 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"os"
-	"os/exec"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
@@ -60,11 +60,11 @@ var (
 	//   <input type="hidden" value="..." name="rds_form_token"/>          ← value 在前
 	//   <input type="hidden" id="alieditUid" name="alieditUid" value="..."/>  ← 驼峰
 	//   <input type="hidden" name="passwordSecurityId" value="..."/>      ← 驼峰
-	reRdsToken   = regexp.MustCompile(`value="([^"]{8,80})"\s+name="rds_form_token"`)
-	reAlieditUID = regexp.MustCompile(`id="alieditUid"[^>]*?value="([^"]{8,80})"`)
+	reRdsToken    = regexp.MustCompile(`value="([^"]{8,80})"\s+name="rds_form_token"`)
+	reAlieditUID  = regexp.MustCompile(`id="alieditUid"[^>]*?value="([^"]{8,80})"`)
 	rePasswordSID = regexp.MustCompile(`name="passwordSecurityId"\s+value="([^"]{8,140})"`)
-	reSecurityID = regexp.MustCompile(`securityId["']?\s*:\s*["']([^"']{10,160})["']`)
-	reBarcode    = regexp.MustCompile(`barcode["']?\s*:\s*["']([^"']{10,400})["']`)
+	reSecurityID  = regexp.MustCompile(`securityId["']?\s*:\s*["']([^"']{10,160})["']`)
+	reBarcode     = regexp.MustCompile(`barcode["']?\s*:\s*["']([^"']{10,400})["']`)
 )
 
 // qrLogin 一次扫码登录的运行时状态（不落盘）
@@ -748,10 +748,12 @@ func alipayRefreshPID(sessionID string) (string, error) {
 	if a, had := findAccount(pid); had {
 		ch = a.ChannelID
 	}
-	upsertAccount(Account{
+	if err := upsertAccount(Account{
 		Type: "alipay", Wxid: pid, Nick: s.Nick,
 		ChannelID: ch, ChannelCode: "alipay_app", Enabled: true,
-	})
+	}); err != nil {
+		return "", err
+	}
 	logInfo("alipay", "重新获取 PID 成功：%s（Cookie %d 条）", maskPid(pid), len(s.Cookies))
 	return pid, nil
 }
@@ -766,8 +768,9 @@ func orDefault(v, def string) string {
 // alipayPromoteChipsSession 确保会话里有「登录态」那条 ALIPAYJSESSIONID。
 //
 // 实测：扫码登录成功后，支付宝会下发两条 session——
-//   ALIPAYJSESSIONID        = ...RZ44   扫码阶段（auth 域）
-//   _CHIPS-ALIPAYJSESSIONID = ...RZ55   已登录（CHIPS 分区 cookie）
+//
+//	ALIPAYJSESSIONID        = ...RZ44   扫码阶段（auth 域）
+//	_CHIPS-ALIPAYJSESSIONID = ...RZ55   已登录（CHIPS 分区 cookie）
 //
 // 参考程序的做法是**两条都留着**（它的 alipay_sessions.json 里
 // ALIPAYJSESSIONID 有 2 个不同值，_CHIPS-ALIPAYJSESSIONID 1 个），
@@ -888,10 +891,12 @@ func finishQRLogin(qr *qrLogin) error {
 		if a, had := findAccount(pid); had {
 			ch = a.ChannelID
 		}
-		upsertAccount(Account{
+		if err := upsertAccount(Account{
 			Type: "alipay", Wxid: pid, Nick: s.Nick,
 			ChannelID: ch, ChannelCode: "alipay_app", Enabled: true,
-		})
+		}); err != nil {
+			return err
+		}
 	}
 	logInfo("alipay", "扫码登录成功，Cookie %d 条，PID=%s", len(cookies), maskPid(pid))
 
@@ -1002,4 +1007,3 @@ func alipayPollSecurityStatus(chk *alipaySecurityCheck) (string, string, error) 
 func qrImagePNG(content string, size int) ([]byte, error) {
 	return qrcode.Encode(content, qrcode.Medium, size)
 }
-

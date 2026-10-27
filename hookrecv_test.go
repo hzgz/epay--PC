@@ -47,7 +47,7 @@ func TestHookEnvelopeRoundTrip(t *testing.T) {
 	plain := []byte(`{"event_type":1001,"msgid":1,"type":49,"sender":"gh_f0a92aa7146c","content":"<msg/>"}`)
 
 	env := sealHook(t, key, "0123456789abcdef0123456789abcdef", now, plain)
-	got, err := hookOpenWith(keyHex, env)
+	got, err := hookOpenWith(keyHex, env, "/events/wechat")
 	if err != nil {
 		t.Fatalf("解密失败: %v", err)
 	}
@@ -56,13 +56,13 @@ func TestHookEnvelopeRoundTrip(t *testing.T) {
 	}
 
 	// 同一 requestId 重放必须拒绝
-	if _, err := hookOpenWith(keyHex, env); err == nil {
+	if _, err := hookOpenWith(keyHex, env, "/events/wechat"); err == nil {
 		t.Error("重放未被拒绝")
 	}
 
 	// 时间戳超窗必须拒绝
 	old := sealHook(t, key, "ffffffffffffffffffffffffffffffff", now-3600, plain)
-	if _, err := hookOpenWith(keyHex, old); err == nil {
+	if _, err := hookOpenWith(keyHex, old, "/events/wechat"); err == nil {
 		t.Error("过期事件未被拒绝")
 	}
 
@@ -71,7 +71,7 @@ func TestHookEnvelopeRoundTrip(t *testing.T) {
 	raw, _ := base64.StdEncoding.DecodeString(bad.Payload)
 	raw[0] ^= 0xff
 	bad.Payload = base64.StdEncoding.EncodeToString(raw)
-	if _, err := hookOpenWith(keyHex, bad); err == nil {
+	if _, err := hookOpenWith(keyHex, bad, "/events/wechat"); err == nil {
 		t.Error("篡改未被检出")
 	}
 }
@@ -96,6 +96,9 @@ func TestHookEventMessageMapping(t *testing.T) {
 	}
 	if m.MsgID != 42 {
 		t.Errorf("MsgID=%d", m.MsgID)
+	}
+	if m.StableID != "wechat-server:42" {
+		t.Errorf("StableID=%q", m.StableID)
 	}
 	if !containsDigit(m.Content, "0.10") {
 		t.Errorf("标题应含金额: %q", m.Content)

@@ -4,17 +4,17 @@ package main
 
 import (
 	"bytes"
-	"errors"
-	"os/exec"
-	"path/filepath"
-	"os"
-	"regexp"
-	"sort"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -25,7 +25,7 @@ var uiHTML []byte
 type StatusResp struct {
 	Attached      bool   `json:"attached"` // 数据库/日志监控是否在跑
 	Live          bool   `json:"live"`
-	HookAccounts  int    `json:"hook_accounts"`     // 当前模式是否在工作（key=attached，hook=接收端+注入）
+	HookAccounts  int    `json:"hook_accounts"` // 当前模式是否在工作（key=attached，hook=接收端+注入）
 	Pid           uint32 `json:"pid"`
 	WechatRunning bool   `json:"wechat_running"`
 	Scanned       int    `json:"scanned"`
@@ -64,6 +64,12 @@ type PointStat struct {
 	Parsed  int    `json:"parsed"`
 }
 
+func writeAPIError(w http.ResponseWriter, status int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+}
+
 type MsgView struct {
 	ID       string  `json:"id"`
 	From     string  `json:"from"`
@@ -73,6 +79,8 @@ type MsgView struct {
 	Display  string  `json:"display"`
 	Time     uint64  `json:"time"`
 	RawID    string  `json:"rawid"`
+	StableID string  `json:"stable_id,omitempty"`
+	LocalID  int64   `json:"local_id,omitempty"`
 	Amount   float64 `json:"amount"`
 	PayType  string  `json:"pay_type"`
 	Reported bool    `json:"reported"`
@@ -163,10 +171,10 @@ func (e *Engine) snapshot() StatusResp {
 	}
 
 	return StatusResp{
-		WxMode: GetConfig().EffectiveWxMode(),
-		Attached:      live,
-		Live:          live || (GetConfig().EffectiveWxMode() == "hook" && hookRunning()),
-		HookAccounts:  len(GetConfig().EffectiveHookAccounts()),
+		WxMode:       GetConfig().EffectiveWxMode(),
+		Attached:     live,
+		Live:         live || (GetConfig().EffectiveWxMode() == "hook" && hookRunning()),
+		HookAccounts: len(GetConfig().EffectiveHookAccounts()),
 
 		Pid:           pid,
 		WechatRunning: PidByName(WeChatProc) != 0,
@@ -195,20 +203,20 @@ func (e *Engine) snapshot() StatusResp {
 
 // DebugItem 调试用：金额识别之前的完整消息结构
 type DebugItem struct {
-	Mode     string  `json:"mode"` // key / hook，按模式分开看
-	Seq      int     `json:"seq"`
-	From     string  `json:"from"`
-	To       string  `json:"to"`
-	Content  string  `json:"content"`
-	RawText  string  `json:"raw_content"` // XML 原文，详情页展示用
-	Display  string  `json:"display"`
-	Time     uint64  `json:"time"`
-	MsgID    uint64  `json:"msgid"`
-	Amount   float64 `json:"amount"`
-	PayType  string  `json:"pay_type"`
-	Bytes    int     `json:"bytes"`
-	RawHead  string  `json:"raw_head"`
-	At       string  `json:"at"`
+	Mode    string  `json:"mode"` // key / hook，按模式分开看
+	Seq     int     `json:"seq"`
+	From    string  `json:"from"`
+	To      string  `json:"to"`
+	Content string  `json:"content"`
+	RawText string  `json:"raw_content"` // XML 原文，详情页展示用
+	Display string  `json:"display"`
+	Time    uint64  `json:"time"`
+	MsgID   uint64  `json:"msgid"`
+	Amount  float64 `json:"amount"`
+	PayType string  `json:"pay_type"`
+	Bytes   int     `json:"bytes"`
+	RawHead string  `json:"raw_head"`
+	At      string  `json:"at"`
 }
 
 // 从 XML 消息里提取发送者 / 接收者
@@ -221,12 +229,12 @@ const debugMax = 20
 
 // UnkSample 未识别的 pb 结构采样：用来判断某类消息是否经过了 hook
 type UnkSample struct {
-	Seq   int    `json:"seq"`
-	Bytes int    `json:"bytes"`
-	At    string `json:"at"`
-	From  string `json:"from"`
-	To    string `json:"to"`
-	Head  string `json:"head"`
+	Seq   int      `json:"seq"`
+	Bytes int      `json:"bytes"`
+	At    string   `json:"at"`
+	From  string   `json:"from"`
+	To    string   `json:"to"`
+	Head  string   `json:"head"`
 	Texts []string `json:"texts"`
 }
 
@@ -291,9 +299,9 @@ func (e *Engine) addDebugFrom(m *ChatMsg, rawLen int, src string) {
 	}
 	e.debugSeq++
 	it := DebugItem{
-		Mode:   mode,
+		Mode:    mode,
 		PayType: ExtractPayType(m.Display),
-		Seq: e.debugSeq, From: m.From, To: m.To, Content: m.Content,
+		Seq:     e.debugSeq, From: m.From, To: m.To, Content: m.Content,
 		Display: m.Display, Time: m.Time, MsgID: m.MsgID, Amount: m.Amount,
 		Bytes: rawLen, RawHead: head, At: time.Now().Format("15:04:05"),
 	}
@@ -353,8 +361,8 @@ func (e *Engine) addHistoryEx(m *ChatMsg, reported bool, errMsg string, res *Rep
 	v := MsgView{
 		WxMode:  mode,
 		Account: m.To,
-		From: m.From, To: m.To, Content: m.Content, RawText: m.RawText, Display: m.Display,
-		Time: m.Time, RawID: fmt.Sprintf("%d", m.MsgID), Amount: m.Amount,
+		From:    m.From, To: m.To, Content: m.Content, RawText: m.RawText, Display: m.Display,
+		Time: m.Time, RawID: fmt.Sprintf("%d", m.MsgID), StableID: m.StableID, LocalID: m.LocalID, Amount: m.Amount,
 		Reported: reported, Err: errMsg,
 		Platform: platform, ChannelCode: channelCode, OrderStatus: orderStatus,
 		CallbackStatus: cbStatus, CallbackBody: cbBody, CallbackURL: cbURL,
@@ -546,10 +554,13 @@ func startServer() (int, error) {
 				return
 			}
 			s, ok := findAlipaySession(id)
-			removeAlipaySession(id)
 			if ok && s.PID != "" {
-				removeAccount(s.PID)
+				if err := removeAccount(s.PID); err != nil {
+					writeAPIError(w, http.StatusInternalServerError, err)
+					return
+				}
 			}
+			removeAlipaySession(id)
 			saveAlipaySessions()
 			w.Write([]byte(`{"ok":true}`))
 		default:
@@ -835,10 +846,15 @@ func startServer() (int, error) {
 			saveAlipaySessions()
 
 			if s.PID != "" {
-				upsertAccount(Account{
+				if err := upsertAccount(Account{
 					Type: "alipay", Wxid: s.PID, Nick: s.Nick,
 					ChannelID: s.ChannelFor(GetConfig().Mode), ChannelCode: "alipay_app", Enabled: true,
-				})
+				}); err != nil {
+					s.HeartbeatMsg = "账号配置保存失败：" + err.Error()
+					upsertAlipaySession(s)
+					_ = saveAlipaySessions()
+					logWarn("config", "保存支付宝账号 %s 失败：%v", maskPid(s.PID), err)
+				}
 			}
 			logInfo("alipay", "登录完成：Cookie %d 条，PID=%s，%s",
 				len(cookies), maskPid(s.PID), s.HeartbeatMsg)
@@ -884,10 +900,13 @@ func startServer() (int, error) {
 			if a, had := findAccount(s.PID); had {
 				ch = a.ChannelID
 			}
-			upsertAccount(Account{
+			if err := upsertAccount(Account{
 				Type: "alipay", Wxid: s.PID, Nick: s.Nick,
 				ChannelID: ch, ChannelCode: "alipay_app", Enabled: true,
-			})
+			}); err != nil {
+				writeAPIError(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
 		logInfo("alipay", "账号 %s 登录成功，Cookie %d 条", maskPid(s.PID), len(s.Cookies))
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
@@ -929,10 +948,13 @@ func startServer() (int, error) {
 			go xpayHeartbeatRound()
 		}
 		if s.PID != "" {
-			upsertAccount(Account{
+			if err := upsertAccount(Account{
 				Type: "alipay", Wxid: s.PID, Nick: s.Nick,
 				ChannelID: s.ChannelFor(GetConfig().Mode), ChannelCode: "alipay_app", Enabled: true,
-			})
+			}); err != nil {
+				writeAPIError(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
 		logInfo("config", "支付宝账号 %s 绑定通道 %s（模式 %s）", maskPid(s.PID), s.ChannelID, GetConfig().Mode)
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
@@ -1011,7 +1033,10 @@ func startServer() (int, error) {
 			// 通道号按平台分存：X-Ypay 与码支付V1 是两套编号
 			mode := GetConfig().Mode
 			a.SetChannelFor(mode, a.ChannelID)
-			upsertAccount(a)
+			if err := upsertAccount(a); err != nil {
+				writeAPIError(w, http.StatusInternalServerError, err)
+				return
+			}
 			logInfo("config", "账号通道已保存 wxid=%s 通道=%s（模式 %s）编码=%s",
 				a.Wxid, a.ChannelID, mode, a.ChannelCode)
 			if strings.TrimSpace(GetConfig().Mode) == "xpay" {
@@ -1019,6 +1044,10 @@ func startServer() (int, error) {
 				go xpayHeartbeatRound()
 			}
 			w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		if err := accountsError(); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
 			return
 		}
 		// 默认只给微信账号，支付宝账号走 /api/alipay。
@@ -1046,7 +1075,10 @@ func startServer() (int, error) {
 			http.Error(w, "wxid required", 400)
 			return
 		}
-		deleteAccountAll(wxid)
+		if err := deleteAccountAll(wxid); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
 		w.Write([]byte(`{"ok":true}`))
 	})
 
@@ -1217,10 +1249,13 @@ func startServer() (int, error) {
 		if had && old.Nick != "" {
 			nick = old.Nick
 		}
-		upsertAccount(Account{
+		if err := upsertAccount(Account{
 			Wxid: req.Wxid, Nick: nick,
 			ChannelID: ch, ChannelCode: code, Enabled: true,
-		})
+		}); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
 
 		// 保存到多账号列表（同一 wxid 就更新密钥，不重复添加）
 		cfg := GetConfig()
@@ -1302,14 +1337,14 @@ func startServer() (int, error) {
 			keys = append(keys, a.Wxid)
 		}
 		hooks := c.HookAccounts // 停止的账号也要返回，界面才能显示并重新启动
-	type hookView struct {
-		HookAccount
-		Online bool `json:"online"`
-	}
-	hookViews := make([]hookView, 0, len(hooks))
-	for _, a := range hooks {
-		hookViews = append(hookViews, hookView{HookAccount: a, Online: a.PID != 0 && moduleLoaded(uint32(a.PID), "easymon_hook")})
-	}
+		type hookView struct {
+			HookAccount
+			Online bool `json:"online"`
+		}
+		hookViews := make([]hookView, 0, len(hooks))
+		for _, a := range hooks {
+			hookViews = append(hookViews, hookView{HookAccount: a, Online: a.PID != 0 && moduleLoaded(uint32(a.PID), "easymon_hook")})
+		}
 		out := map[string]any{
 			"mode": c.EffectiveWxMode(), "key_accounts": keys,
 			"hook_accounts": hookViews, "hook": hookStateSnapshot(), "dll": HookDLLInfo(),
@@ -1376,15 +1411,15 @@ func startServer() (int, error) {
 		req.Enabled = true
 		c := GetConfig()
 		mode := c.Mode
-	// 同一接口模式下通道号不能重复（微信与支付宝共用一套编号）
-	if owner, used := channelOwner(mode, req.ChannelID, req.Wxid); used {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(409)
-		json.NewEncoder(w).Encode(map[string]any{
-			"ok": false, "err": fmt.Sprintf("通道 %s 已被账号 %s 占用，同一接口模式下不能重复", req.ChannelID, short(owner)),
-		})
-		return
-	}
+		// 同一接口模式下通道号不能重复（微信与支付宝共用一套编号）
+		if owner, used := channelOwner(mode, req.ChannelID, req.Wxid); used {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(409)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok": false, "err": fmt.Sprintf("通道 %s 已被账号 %s 占用，同一接口模式下不能重复", req.ChannelID, short(owner)),
+			})
+			return
+		}
 		found := false
 		for i := range c.HookAccounts {
 			if c.HookAccounts[i].Wxid == req.Wxid {
@@ -1495,12 +1530,21 @@ func startServer() (int, error) {
 			http.Error(w, "bad request", 400)
 			return
 		}
+		if err := accountsError(); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
 		a, ok := findAccount(req.Wxid)
 		if !ok {
 			http.Error(w, "not found", 404)
 			return
 		}
-		if !setAccountEnabled(req.Wxid, req.Enabled) {
+		found, err := setAccountEnabled(req.Wxid, req.Enabled)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !found {
 			http.Error(w, "not found", 404)
 			return
 		}
@@ -1582,19 +1626,19 @@ func startServer() (int, error) {
 			}
 		}
 		c.HookAccounts = kept
-	// 记入删除黑名单：进程还在时也不自动加回来；删空再额外关掉自动绑定
-	if !c.HookBlockedWxid(wxid) {
-		c.HookBlocked = append(c.HookBlocked, wxid)
-	}
-	if len(kept) == 0 {
-		c.HookNoAutoBind = true
-	}
-	if err := SetConfig(c); err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	logInfo("hook", "已移除账号 %s", wxid)
-	w.Header().Set("Content-Type", "application/json")
+		// 记入删除黑名单：进程还在时也不自动加回来；删空再额外关掉自动绑定
+		if !c.HookBlockedWxid(wxid) {
+			c.HookBlocked = append(c.HookBlocked, wxid)
+		}
+		if len(kept) == 0 {
+			c.HookNoAutoBind = true
+		}
+		if err := SetConfig(c); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		logInfo("hook", "已移除账号 %s", wxid)
+		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"ok":true}`))
 	})
 
@@ -1609,7 +1653,7 @@ func startServer() (int, error) {
 			bound[a.PID] = true
 		}
 		list := make([]item, 0, 4)
-		pids := MainWeChatPids()   // 双开时会有多个
+		pids := MainWeChatPids() // 双开时会有多个
 		if len(pids) == 0 {
 			pids = MainPidsOf(WeChatProc)
 		}
@@ -1827,12 +1871,14 @@ func startServer() (int, error) {
 		}
 		acc, ok := findWxAccount(wxid)
 		if !ok {
-			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "找不到账号 " + wxid})
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "找不到账号 " + wxid})
 			return
 		}
 		dbPath := acc.MsgDB
 		if dbPath == "" || !fileExists(dbPath) {
-			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "该账号没有 message_0.db"})
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "该账号没有 message_0.db"})
 			return
 		}
 		keyHex := ""
@@ -1846,18 +1892,21 @@ func startServer() (int, error) {
 			keyHex = GetConfig().DbKey
 		}
 		if keyHex == "" {
-			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "该账号还没有通行密钥"})
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "该账号还没有通行密钥"})
 			return
 		}
 		db, err := OpenWxDB(dbPath, keyHex)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "打开 message_0.db 失败：" + err.Error()})
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": "打开 message_0.db 失败：" + err.Error()})
 			return
 		}
 		msgs, err := db.PeekAllTables(2)
 		if err != nil {
 			db.Close()
-			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
 			return
 		}
 		// 反推表名对应的联系人（带缓存，只查没查过的表）
@@ -1880,7 +1929,8 @@ func startServer() (int, error) {
 			}
 		}
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"ok": false, "err": err.Error()})
 			return
 		}
 		type row struct {
@@ -1978,7 +2028,8 @@ func startServer() (int, error) {
 				rows[i].From = v
 			}
 		}
-		w.Header().Set("Content-Type", "application/json"); json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": len(rows), "rows": rows})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "count": len(rows), "rows": rows})
 	})
 	mux.HandleFunc("/api/debug", func(w http.ResponseWriter, r *http.Request) {
 		// 消息调试按模式隔离：默认只看当前模式，?mode=all 才合并
@@ -2026,7 +2077,7 @@ func startServer() (int, error) {
 // forwardAndRecord 微信消息的统一上报入口（hook 路径使用）：
 // 去重 → 统计 → 上报 → 写收款记录，和数据库路径保持同一套语义。
 func (e *Engine) forwardAndRecord(m *ChatMsg) {
-	key := hashMsg(m.From+"|"+m.To+"|"+m.Content, m.Time)
+	key := messageDedupKey(m)
 	e.mu.Lock()
 	if e.seen[key] {
 		e.mu.Unlock()

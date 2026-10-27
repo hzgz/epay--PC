@@ -6,11 +6,11 @@ package main
 // 这一层覆盖了 hook 抓不到的场景：微信收款助手、微信支付的收款/赞赏通知。
 
 import (
-	"golang.org/x/sys/windows/registry"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/sys/windows/registry"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -93,11 +93,14 @@ func cStrGo(p uintptr) string {
 // 注意：wxtool 的句柄只能在创建它的 OS 线程上使用，
 // 所以创建时用 runtime.LockOSThread 绑定，且所有操作必须在同一 goroutine。
 type WxDB struct {
-	handle uintptr
-	path   string
-	mu     sync.Mutex
-	closed bool
-	reqCh  chan dbReq
+	handle   uintptr
+	path     string
+	mu       sync.Mutex
+	submitMu sync.Mutex
+	closed   bool
+	closing  bool
+	reqCh    chan dbReq
+	done     chan struct{}
 }
 
 // OpenWxDB 用密钥打开一个微信数据库
@@ -109,7 +112,7 @@ func OpenWxDB(dbPath, keyHex string) (*WxDB, error) {
 	if len(keyHex) != 64 {
 		return nil, fmt.Errorf("密钥必须是 64 位十六进制")
 	}
-	d := &WxDB{path: dbPath, reqCh: make(chan dbReq, 8)}
+	d := &WxDB{path: dbPath, reqCh: make(chan dbReq, 8), done: make(chan struct{})}
 
 	type openResp struct {
 		handle uintptr
@@ -118,6 +121,7 @@ func OpenWxDB(dbPath, keyHex string) (*WxDB, error) {
 	openCh := make(chan openResp, 1)
 
 	go func() {
+		defer close(d.done)
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
@@ -147,15 +151,11 @@ func OpenWxDB(dbPath, keyHex string) (*WxDB, error) {
 
 		// 同一个线程继续处理所有查询
 		openCh <- openResp{handle: h}
-		for req := range d.reqCh {
-			v, err := d.rawQuery(req.op, req.args)
-			req.resp <- dbResp{v: v, err: err}
-		}
+		d.serveRequests(d.rawQuery)
 	}()
 
 	r := <-openCh
 	if r.err != nil {
-		close(d.reqCh)
 		return nil, r.err
 	}
 	d.handle = r.handle
@@ -173,29 +173,95 @@ type dbResp struct {
 	err error
 }
 
+func (d *WxDB) serveRequests(run func(string, map[string]any) (any, error)) {
+	for {
+		req, ok := <-d.reqCh
+		if !ok {
+			return
+		}
+		v, err := run(req.op, req.args)
+		if req.resp != nil {
+			req.resp <- dbResp{v: v, err: err}
+		}
+		if req.op == "__close__" {
+			return
+		}
+	}
+}
+
 // Close 关闭数据库
 func (d *WxDB) Close() {
-	if d.closed {
+	if d == nil {
+		return
+	}
+	d.submitMu.Lock()
+	if d.closing {
+		done := d.done
+		d.submitMu.Unlock()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+		return
+	}
+	d.closing = true
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	select {
+	case d.reqCh <- dbReq{op: "__close__", resp: make(chan dbResp, 1)}:
+		d.submitMu.Unlock()
+	case <-d.done:
+		d.submitMu.Unlock()
+		return
+	case <-timer.C:
+		d.closing = false
+		d.submitMu.Unlock()
 		return
 	}
 	select {
-	case d.reqCh <- dbReq{op: "__close__", resp: make(chan dbResp, 1)}:
-	case <-time.After(3 * time.Second):
-		return
+	case <-d.done:
+	case <-timer.C:
 	}
-	close(d.reqCh)
 }
 
 // query 执行结构化查询（转发到专用线程）
 func (d *WxDB) query(op string, args map[string]any) (any, error) {
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
 	ch := make(chan dbResp, 1)
 	select {
+	case <-d.done:
+		return nil, fmt.Errorf("数据库已关闭")
+	default:
+	}
+	d.submitMu.Lock()
+	if d.closing {
+		d.submitMu.Unlock()
+		return nil, fmt.Errorf("数据库已关闭")
+	}
+	select {
 	case d.reqCh <- dbReq{op: op, args: args, resp: ch}:
-	case <-time.After(10 * time.Second):
+		d.submitMu.Unlock()
+	case <-d.done:
+		d.submitMu.Unlock()
+		return nil, fmt.Errorf("数据库已关闭")
+	case <-timer.C:
+		d.submitMu.Unlock()
 		return nil, fmt.Errorf("查询超时")
 	}
-	r := <-ch
-	return r.v, r.err
+	select {
+	case r := <-ch:
+		return r.v, r.err
+	case <-d.done:
+		select {
+		case r := <-ch:
+			return r.v, r.err
+		default:
+			return nil, fmt.Errorf("数据库已关闭")
+		}
+	case <-timer.C:
+		return nil, fmt.Errorf("查询超时")
+	}
 }
 
 // rawQuery 真正的查询（只在 run 的锁定线程上调用）
@@ -513,12 +579,6 @@ func findWxAccount(wxid string) (WxAccount, bool) {
 	}
 	return WxAccount{}, false
 }
-
-
-
-
-
-
 
 // PeekAllTables 扫所有 Msg_ 表，各取最新 perTable 条。
 // 用来在「消息调试」里展示好友 / 群聊消息（message_0.db 里每个联系人一张表）。

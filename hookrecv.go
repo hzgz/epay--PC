@@ -17,23 +17,23 @@ package main
 
 import (
 	"crypto/aes"
-	"unicode/utf8"
-	"fmt"
-	"os"
-	"path/filepath"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-		"io"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const hookIpcVersion = "wechat-ipc-v1"
@@ -66,6 +66,24 @@ var (
 )
 
 // hookEnsureKey 返回当前密钥；没有就生成一个并落盘（DPAPI 加密）
+// hookIPCToken 每次安装生成的随机路径令牌（写入配置，接收端与 DLL 共用）
+func hookIPCToken() string {
+	c := GetConfig()
+	if strings.TrimSpace(c.HookIPCToken) != "" {
+		return strings.TrimSpace(c.HookIPCToken)
+	}
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "wechat"
+	}
+	tok := hex.EncodeToString(b)
+	_ = UpdateConfig(func(cur *Config) error {
+		cur.HookIPCToken = tok
+		return nil
+	})
+	return tok
+}
+
 func hookEnsureKey() string {
 	c := GetConfig()
 	if k := strings.TrimSpace(c.HookKey); len(k) == 64 {
@@ -98,7 +116,13 @@ func startHookReceiver() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/events/wechat", handleHookEvent)
+	token := hookIPCToken()
+	evPath := "/events/" + token
+	mux.HandleFunc(evPath, handleHookEvent)
+	// 兼容旧组件：老版本发的是固定路径
+	if token != "wechat" {
+		mux.HandleFunc("/events/wechat", handleHookEvent)
+	}
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		st := hookStateSnapshot()
 		st["listen"] = addr
@@ -122,15 +146,15 @@ func startHookReceiver() {
 			logError("hook", "消息接收服务已停止：%v", err)
 		}
 	}()
-	// 把接收端地址与密钥写给注入的 DLL（同一用户，%TEMP% 下）
-	writeHookConfig(addr, key)
+	// 把接收端地址、密钥与随机路径写给注入的 DLL（同一用户，%TEMP% 下）
+	writeHookConfig(addr, key, evPath)
 	logInfo("hook", "消息接收服务已启动")
 }
 
 // writeHookConfig 生成 DLL 读取的配置：ADDR / KEY
-func writeHookConfig(addr, key string) {
-	path := filepath.Join(os.TempDir(), "easymon_hook.cfg")
-	body := "ADDR=" + addr + "\nKEY=" + key + "\n"
+func writeHookConfig(addr, key, evPath string) {
+	path := filepath.Join(os.TempDir(), "wxs.dat")
+	body := "ADDR=" + addr + "\nKEY=" + key + "\nPATH=" + evPath + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		logWarn("hook", "配置同步失败：%v", err)
 		return
@@ -165,7 +189,7 @@ func handleHookEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad envelope", 400)
 		return
 	}
-	plain, err := hookOpen(env)
+	plain, err := hookOpen(env, r.URL.Path)
 	if err != nil {
 		logWarn("hook", "事件解密失败: %v", err)
 		http.Error(w, "decrypt failed", 400)
@@ -191,12 +215,12 @@ func handleHookEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 // hookOpen 校验时间窗/重放并解密（取当前配置的密钥）
-func hookOpen(env hookEnvelope) ([]byte, error) {
-	return hookOpenWith(strings.TrimSpace(GetConfig().HookKey), env)
+func hookOpen(env hookEnvelope, evPath string) ([]byte, error) {
+	return hookOpenWith(strings.TrimSpace(GetConfig().HookKey), env, evPath)
 }
 
 // hookOpenWith 纯解码逻辑，便于单测
-func hookOpenWith(keyHex string, env hookEnvelope) ([]byte, error) {
+func hookOpenWith(keyHex string, env hookEnvelope, evPath string) ([]byte, error) {
 	now := time.Now().Unix()
 	skew := env.Timestamp - now
 	if skew < -300 || skew > 300 {
@@ -240,8 +264,8 @@ func hookOpenWith(keyHex string, env hookEnvelope) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	aad := fmt.Sprintf("%s\ncallback\n/events/wechat\n%s\n%d",
-		hookIpcVersion, env.RequestID, env.Timestamp)
+	aad := fmt.Sprintf("%s\ncallback\n%s\n%s\n%d",
+		hookIpcVersion, evPath, env.RequestID, env.Timestamp)
 	sealed := append(append([]byte{}, ct...), tag...)
 	return gcm.Open(nil, nonce, sealed, []byte(aad))
 }
@@ -341,6 +365,7 @@ func buildHookMsg(pid int, ev hookEvent) *ChatMsg {
 			account = wx
 		}
 	}
+	stableID := stableWeChatMsgID(ev.MsgID)
 
 	// 只有带 <appmsg> 的才是真正的公众号消息。
 	// 微信的同步/操作消息也是 <msg> 开头（<op id='2'>/<op id='5'>，会话列表更新），
@@ -371,14 +396,15 @@ func buildHookMsg(pid int, ev hookEvent) *ChatMsg {
 			body = strings.TrimSpace(text[i+3:])
 		}
 		return &ChatMsg{
-			From:    from,
-			To:      account,
-			Content: body,
-			Display: text,
-			Time:    uint64(ev.Timestamp),
-			RawText: text,
-			MsgID:   ev.MsgID,
-			GHName:  "实时消息",
+			From:     from,
+			To:       account,
+			Content:  body,
+			Display:  text,
+			Time:     uint64(ev.Timestamp),
+			RawText:  text,
+			MsgID:    ev.MsgID,
+			StableID: stableID,
+			GHName:   "实时消息",
 		}
 	}
 
@@ -397,16 +423,17 @@ func buildHookMsg(pid int, ev hookEvent) *ChatMsg {
 	}
 
 	m := &ChatMsg{
-		From:    sender,
-		To:      account,
-		Content: gm.Title,
-		Display: gm.Title,
-		Time:    uint64(ev.Timestamp),
-		RawText: ev.Content,
-		Amount:  amount,
-		MsgID:   ev.MsgID,
-		GHFrom:  gh,
-		GHName:  ghNickname(gh),
+		From:     sender,
+		To:       account,
+		Content:  gm.Title,
+		Display:  gm.Title,
+		Time:     uint64(ev.Timestamp),
+		RawText:  ev.Content,
+		Amount:   amount,
+		MsgID:    ev.MsgID,
+		StableID: stableID,
+		GHFrom:   gh,
+		GHName:   ghNickname(gh),
 	}
 	if m.Content == "" {
 		m.Content = truncate(stripTags(ev.Content), 80)

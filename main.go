@@ -7,6 +7,8 @@ package main
 //       只读，不修改微信逻辑，不碰数据库。
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/signal"
@@ -17,14 +19,14 @@ import (
 
 const (
 	AppName    = "易监控PC版"
-	AppVersion = "1.66"
+	AppVersion = "1.67"
 	WeChatProc = "Weixin.exe"
 )
 
 type Engine struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	hooks    []*Hooks
-	seen     map[uint64]bool
+	seen     map[string]bool
 	history  []MsgView
 	debug    []DebugItem
 	debugSeq int
@@ -58,7 +60,7 @@ type Stats struct {
 	AllCount     int
 }
 
-var eng = &Engine{seen: make(map[uint64]bool), stopCh: make(chan struct{})}
+var eng = &Engine{seen: make(map[string]bool), stopCh: make(chan struct{})}
 
 func logf(format string, a ...interface{}) {
 	logL("INFO", "system", format, a...)
@@ -184,18 +186,15 @@ func (e *Engine) pollOne(hk *Hooks) {
 			}
 		}
 
-		// 去重：同一条消息在微信内部会被序列化多次（发网络 / 存本地），
-		// buffer 里会出现多个副本。MsgID 在不同结构下位置不一致（长路径
-		// 的 2.2.2.2.1 是别的计数），所以统一用「发送者+接收者+正文+时间」
-		// 做指纹；时间参与哈希，保证不同时刻的相同文案不会被误合并。
-		key := hashMsg(m.From+"|"+m.To+"|"+m.Content, m.Time)
+		// 去重优先使用来源确认的消息 ID；无可信 ID 时退回正文与时间指纹。
+		key := messageDedupKey(m)
 		e.mu.Lock()
 		if e.seen[key] {
 			e.mu.Unlock()
 			continue
 		}
 		if len(e.seen) > 20000 {
-			e.seen = make(map[uint64]bool)
+			e.seen = make(map[string]bool)
 		}
 		e.seen[key] = true
 		e.stats.Parsed++
@@ -231,13 +230,15 @@ func (e *Engine) pollOne(hk *Hooks) {
 
 		// 从收款消息里发现收款账号，自动建档（方便后续绑定通道）
 		if m.Amount > 0 && m.To != "" {
-			ensureAccount(m.To)
+			if err := ensureAccount(m.To); err != nil {
+				logWarn("config", "自动保存账号 %s 失败：%v", short(m.To), err)
+			}
 		}
 
 		d := ShouldForward(m)
 		if !d.Forward {
 			markAccountMessage(m.To, m.Content)
-	e.addHistory(m, false, "未命中关键词", nil)
+			e.addHistory(m, false, "未命中关键词", nil)
 			continue
 		}
 		e.mu.Lock()
@@ -293,6 +294,26 @@ func hashMsg(s string, t uint64) uint64 {
 	}
 	h ^= t
 	return h
+}
+
+// messageDedupKey prefers source identifiers with a known stable meaning.
+// The content/time fingerprint remains a fallback for sources without one.
+func messageDedupKey(m *ChatMsg) string {
+	if m == nil {
+		return ""
+	}
+	scope := m.To + "\x00" + m.From
+	identity := ""
+	switch {
+	case m.StableID != "":
+		identity = "source\x00" + scope + "\x00" + m.StableID
+	case m.LocalID != 0:
+		identity = fmt.Sprintf("local\x00%s\x00%d", scope, m.LocalID)
+	default:
+		identity = fmt.Sprintf("fallback\x00%s\x00%s\x00%d", scope, m.Content, m.Time)
+	}
+	sum := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(sum[:])
 }
 
 func short(s string) string {
@@ -392,7 +413,9 @@ func main() {
 	}
 	logInfo("config", "上报模式: %s   过滤: %s", mode, filterMode)
 	logInfo("config", "配置文件: %s", configPath())
-	loadAccounts()
+	if err := loadAccounts(); err != nil {
+		logError("config", "账号配置不可用，已禁用账号写入以保护原文件: %v", err)
+	}
 	logInfo("config", "账号绑定: %d 个", len(accountsCopy()))
 
 	// 把上次运行的收款记录读回来（只恢复本程序自己抓到的数据，不碰微信历史）
@@ -416,7 +439,6 @@ func main() {
 	} else {
 		startWxMonitorsFromConfig()
 	}
-
 
 	go eng.run()
 
@@ -448,7 +470,7 @@ func main() {
 			select {
 			case <-sig:
 				logInfo("system", "正在退出…")
-	flushRecordsNow()
+				flushRecordsNow()
 				close(eng.stopCh)
 				eng.detach()
 				os.Exit(0)
@@ -473,44 +495,3 @@ func main() {
 	}
 	runWindow(port)
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

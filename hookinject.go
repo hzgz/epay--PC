@@ -34,9 +34,12 @@ func hookDLLPath() string {
 	if err == nil {
 		base = filepath.Dir(exe)
 	}
-	// 目录里所有 easymon_hook*.dll 都参与选择，取最新的
+	// 发布版用中性文件名；开发时仍可用 easymon_hook*.dll
 	matches, _ := filepath.Glob(filepath.Join(base, "native", "easymon_hook*.dll"))
 	cands := matches
+	if p := filepath.Join(base, "native", "wxrt.dll"); fileExists(p) {
+		cands = append(cands, p)
+	}
 	// 取最新的一个：换版本时直接丢新文件进 native 目录即可，不用改名
 	best := ""
 	var bestTime time.Time
@@ -489,3 +492,4 @@ func hookLogHasSince(offset int64, needle string) bool {
 	}
 	return strings.Contains(string(b), needle)
 }
+

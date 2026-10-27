@@ -9,7 +9,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -43,7 +42,7 @@ func reportRetryable(res ReportResult) bool {
 }
 
 func retryKey(m *ChatMsg, platform string) string {
-	return fmt.Sprintf("%s|%s|%s|%s|%d", platform, m.From, m.To, m.Content, m.Time)
+	return platform + "|" + messageDedupKey(m)
 }
 
 func retryQueueFile() string {
@@ -185,12 +184,12 @@ func updateRecordCallback(m *ChatMsg, ok bool, res ReportResult) {
 	if e == nil {
 		return
 	}
-	rawID := fmt.Sprintf("%d", m.MsgID)
+	identity := messageDedupKey(m)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for i := range e.history {
 		v := &e.history[i]
-		if v.RawID != rawID || v.Time != m.Time || v.Account != m.To {
+		if msgID(v) != identity || v.Account != m.To {
 			continue
 		}
 		v.Reported = ok

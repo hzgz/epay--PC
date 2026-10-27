@@ -65,13 +65,13 @@ Copy-Item "$dir\EasyMonitorPC.exe" "$stage\" -Force
 Copy-Item "$dir\integrity.dat" "$stage\" -Force
 Copy-Item "$dir\native\WCDB.dll" "$stage\native\" -Force
 Copy-Item "$dir\native\wxtool_wcdb.dll" "$stage\native\" -Force
-$hookDll = Get-ChildItem "$dir\native\easymon_hook*.dll" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$hookDll = Get-ChildItem "$dir\native\easymon_hook*.dll","$dir\native\wxrt*.dll" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($hookDll) {
-  Copy-Item $hookDll.FullName "$stage\native\easymon_hook.dll" -Force
-  # 组件哈希旁文件：程序注入前会校验，改坏/被替换的组件不会被送进微信
-  $h = (Get-FileHash "$stage\native\easymon_hook.dll" -Algorithm SHA256).Hash.ToLower()
-  Set-Content "$stage\native\easymon_hook.sha256" $h -Encoding ASCII -NoNewline
-  Write-Host "  消息组件 $($hookDll.Name)  sha256=$($h.Substring(0,16))..."
+  # 发布用中性文件名，避免 native 目录里出现 hook 字样
+  Copy-Item $hookDll.FullName "$stage\native\wxrt.dll" -Force
+  $h = (Get-FileHash "$stage\native\wxrt.dll" -Algorithm SHA256).Hash.ToLower()
+  Set-Content "$stage\native\wxrt.sha256" $h -Encoding ASCII -NoNewline
+  Write-Host "  消息组件 $($hookDll.Name) -> wxrt.dll  sha256=$($h.Substring(0,16))..."
 }
 Compress-Archive -Path "$stage\*" -DestinationPath "$rel\EasyMonitorPC-v$Version-win64.zip" -Force
 Remove-Item $stage -Recurse -Force

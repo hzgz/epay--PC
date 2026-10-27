@@ -37,8 +37,8 @@ type WxMonitor struct {
 	lastPoll time.Time
 
 	// 轮询统计（给首页展示）
-	pollRounds int   // 完成轮询的轮数
-	pollMsgs   int   // 累计读到的消息条数
+	pollRounds int // 完成轮询的轮数
+	pollMsgs   int // 累计读到的消息条数
 	pollStart  time.Time
 }
 
@@ -261,18 +261,19 @@ func (m *WxMonitor) handle(w *WxWatch, raw RawMsg) {
 
 	// 组装成与 hook 一致的 ChatMsg
 	m2 := &ChatMsg{
-		From:    w.GhID,
-		To:      m.acc.Wxid,
-		Content: gm.Title,
-		Display: gm.Title,
-		Time:    uint64(raw.CreateAt),
-		RawText: gm.Decoded, // 完整 XML
-		Amount:  gm.Amount,
-		MsgID:   uint64(raw.ServerID),
-		SortSeq: raw.SortSeq,
-		LocalID: raw.LocalID,
-		GHFrom:  w.GhID,
-		GHName:  w.Name,
+		From:     w.GhID,
+		To:       m.acc.Wxid,
+		Content:  gm.Title,
+		Display:  gm.Title,
+		Time:     uint64(raw.CreateAt),
+		RawText:  gm.Decoded, // 完整 XML
+		Amount:   gm.Amount,
+		MsgID:    uint64(raw.ServerID),
+		StableID: stableWeChatMsgID(uint64(raw.ServerID)),
+		SortSeq:  raw.SortSeq,
+		LocalID:  raw.LocalID,
+		GHFrom:   w.GhID,
+		GHName:   w.Name,
 	}
 
 	// 不管是否转发都先记进「消息调试」，
@@ -286,7 +287,7 @@ func (m *WxMonitor) handle(w *WxWatch, raw RawMsg) {
 	}
 
 	// 去重
-	key := hashMsg(m2.From+"|"+m2.To+"|"+m2.Content, m2.Time)
+	key := messageDedupKey(m2)
 	eng.mu.Lock()
 	if eng.seen[key] {
 		eng.mu.Unlock()
@@ -340,19 +341,20 @@ func (m *WxMonitor) recordDebug(w *WxWatch, raw RawMsg, gm GhMessage, title stri
 		}
 	}
 	m2 := &ChatMsg{
-		From:    w.GhID,
-		To:      m.acc.Wxid,
-		Content: title,
-		Display: display,
-		Time:    uint64(raw.CreateAt),
-		RawText: gm.Decoded,
-		Raw:     []byte(raw.Content),
-		Amount:  gm.Amount,
-		MsgID:   uint64(raw.ServerID),
-		SortSeq: raw.SortSeq,
-		LocalID: raw.LocalID,
-		GHFrom:  w.GhID,
-		GHName:  w.Name,
+		From:     w.GhID,
+		To:       m.acc.Wxid,
+		Content:  title,
+		Display:  display,
+		Time:     uint64(raw.CreateAt),
+		RawText:  gm.Decoded,
+		Raw:      []byte(raw.Content),
+		Amount:   gm.Amount,
+		MsgID:    uint64(raw.ServerID),
+		StableID: stableWeChatMsgID(uint64(raw.ServerID)),
+		SortSeq:  raw.SortSeq,
+		LocalID:  raw.LocalID,
+		GHFrom:   w.GhID,
+		GHName:   w.Name,
 	}
 	eng.addDebugFrom(m2, len(raw.Content), "db")
 }
@@ -472,12 +474,3 @@ func InitDefaultWatches() {
 }
 
 var _ = os.Stat
-
-
-
-
-
-
-
-
-

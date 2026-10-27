@@ -109,6 +109,35 @@ func TestBuildReportPCAccount(t *testing.T) {
 	}
 }
 
+func TestBuildReportPCUsesStableSourceIDWhenLocalIDIsUnavailable(t *testing.T) {
+	build := func(stableID string) map[string]any {
+		m := &ChatMsg{
+			From: "gh_f0a92aa7146c", To: "wxid_account",
+			GHFrom: "gh_f0a92aa7146c", Content: "微信支付收款0.10元",
+			RawText: `<msg><appmsg><title>微信支付收款0.10元</title></appmsg></msg>`,
+			Time:    1792839759, StableID: stableID,
+		}
+		_, body, ok := buildReportPC(m, "1")
+		if !ok {
+			t.Fatal("expected PC report")
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(body), &obj); err != nil {
+			t.Fatal(err)
+		}
+		return obj["delivery"].(map[string]any)
+	}
+
+	one := build("wechat-hook:41")
+	two := build("wechat-hook:42")
+	if one["id"] == two["id"] {
+		t.Fatal("distinct source IDs produced the same delivery ID")
+	}
+	if one["messageKey"] == two["messageKey"] {
+		t.Fatal("distinct source IDs produced the same message key")
+	}
+}
+
 // 名单外公众号 → 手机合同兜底
 func TestBuildReportFallbackAccount(t *testing.T) {
 	m := &ChatMsg{
